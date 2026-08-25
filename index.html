@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dashboard Quản Lý Tuyển Dụng</title>
+    <script>
+      document.documentElement.dataset.activeSection = localStorage.getItem("activeDashboardSection") || "orders";
+    </script>
+    <link rel="stylesheet" href="./styles.css" />
+    <script defer src="https://unpkg.com/lucide@latest"></script>
+    <script defer src="./script.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Điều hướng chính">
+        <div class="brand">
+          <div class="brand-mark">
+            <i data-lucide="briefcase-business" aria-hidden="true"></i>
+          </div>
+          <div>
+            <strong>TuyểnDụng Pro</strong>
+            <span>Recruitment CRM</span>
+          </div>
+        </div>
+
+        <nav class="main-nav">
+          <button class="nav-item is-active" type="button" data-section="orders">
+            <i data-lucide="file-check-2" aria-hidden="true"></i>
+            <span>Quản lý đơn</span>
+          </button>
+          <button class="nav-item" type="button" data-section="candidates">
+            <i data-lucide="users" aria-hidden="true"></i>
+            <span>Quản lý ứng viên</span>
+          </button>
+          <button class="nav-item" type="button" data-section="collaborators">
+            <i data-lucide="handshake" aria-hidden="true"></i>
+            <span>Quản lý cộng tác viên</span>
+          </button>
+        </nav>
+
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <label class="search-box">
+            <i data-lucide="search" aria-hidden="true"></i>
+            <input id="globalSearch" type="search" placeholder="Tìm mã đơn, vị trí, ứng viên, cộng tác viên..." />
+          </label>
+          <div class="topbar-actions">
+            <button class="icon-button" type="button" aria-label="Bộ lọc">
+              <i data-lucide="sliders-horizontal" aria-hidden="true"></i>
+            </button>
+            <button class="icon-button" type="button" aria-label="Thông báo">
+              <i data-lucide="bell" aria-hidden="true"></i>
+            </button>
+            <button id="openCreateOrderModal" class="primary-button" type="button">
+              <i data-lucide="plus" aria-hidden="true"></i>
+              <span>Tạo đơn</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="page-heading">
+          <div>
+            <p class="eyebrow">Trung tâm điều phối tuyển dụng</p>
+            <h1 id="pageTitle">Dashboard tuyển dụng</h1>
+            <p class="muted">Theo dõi nhu cầu tuyển, pipeline ứng viên và hiệu quả cộng tác viên trong một màn hình.</p>
+          </div>
+          <div class="segmented" role="tablist" aria-label="Chế độ xem">
+            <button class="is-selected" type="button">Tổng quan</button>
+            <button type="button">Cần xử lý</button>
+            <button type="button">Báo cáo</button>
+          </div>
+        </section>
+
+        <section class="metrics-grid" aria-label="Chỉ số tổng quan">
+          <article class="metric-card">
+            <span>Đơn đang mở</span>
+            <strong id="openOrdersMetric">0</strong>
+            <small id="urgentOrdersMetric">0 đơn ưu tiên cao</small>
+          </article>
+          <article class="metric-card">
+            <span>Ứng viên</span>
+            <strong id="newCandidatesMetric">0</strong>
+            <small>Tổng ứng viên trong database</small>
+          </article>
+          <article class="metric-card">
+            <span>Chờ về Công Ty</span>
+            <strong id="interviewingMetric">0</strong>
+            <small>Ứng viên ở trạng thái chờ về công ty</small>
+          </article>
+          <article class="metric-card">
+            <span>CTV hoạt động</span>
+            <strong id="activeCollaboratorsMetric">0</strong>
+            <small>Cộng tác viên trong database</small>
+          </article>
+        </section>
+
+        <section class="dashboard-grid">
+          <article class="panel panel-wide manage-panel">
+            <section class="samples">
+              <article class="sample-card">
+                <h2 id="primaryPanelTitle">Quản lý đơn đã tạo</h2>
+
+                <div class="manager-toolbar" data-orders-only>
+                  <div class="manager-grid">
+                    <label>Trạng thái
+                      <select id="postStatus">
+                        <option value="Chưa đăng">Chưa đăng</option>
+                        <option value="Đã đăng">Đã đăng</option>
+                        <option value="Tạm dừng">Tạm dừng</option>
+                      </select>
+                    </label>
+                    <label>Nhóm đăng
+                      <input id="postedGroup" placeholder="VD: Group Tokutei Osaka">
+                    </label>
+                    <label>Link bài đăng
+                      <input id="postLink" placeholder="https://facebook.com/...">
+                    </label>
+                    <label>Tương tác
+                      <input id="engagementCount" type="number" min="0" placeholder="0">
+                    </label>
+                  </div>
+
+                  <div class="copy-row">
+                    <button id="saveOrderButton" type="button">Lưu đơn hiện tại</button>
+                    <span class="copy-status" id="managerStatus"></span>
+                  </div>
+                </div>
+
+                <div class="sort-toolbar" data-orders-only>
+                  <label class="search-label">Tìm đơn
+                    <input id="orderSearch" list="orderSearchOptions" placeholder="Gõ mã, ngành, tỉnh... VD: xây dựng">
+                    <datalist id="orderSearchOptions"></datalist>
+                  </label>
+                  <label>Sắp xếp
+                    <select id="orderSortBy">
+                      <option value="createdAt">Thời gian tạo</option>
+                      <option value="name">Chữ cái</option>
+                      <option value="industry">Nhóm ngành</option>
+                    </select>
+                  </label>
+                  <label>Chiều
+                    <select id="orderSortDirection">
+                      <option value="desc">Mới/Z-A</option>
+                      <option value="asc">Cũ/A-Z</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="order-list" id="orderList">
+                  <div class="preload-view preload-candidates">
+                    <div class="clean-toolbar">
+                      <label class="clean-search">Tìm ứng viên
+                        <input type="search" placeholder="Tên, vị trí, nguồn..." disabled>
+                      </label>
+                      <label>Trạng thái
+                        <select disabled><option>Tất cả</option></select>
+                      </label>
+                      <label>Sắp xếp
+                        <select disabled><option>Thời gian tham gia</option></select>
+                      </label>
+                      <label>Chiều
+                        <select disabled><option>Mới/Z-A</option></select>
+                      </label>
+                    </div>
+                    <div class="clean-table candidate-table">
+                      <div class="clean-table-head">
+                        <span></span>
+                        <span>Ứng viên</span>
+                        <span>Đơn / ngành</span>
+                        <span>Trạng thái</span>
+                        <span>CTV</span>
+                        <span>Ngày</span>
+                      </div>
+                      <div class="clean-table-empty"><strong>Đang tải dữ liệu...</strong></div>
+                    </div>
+                  </div>
+                  <div class="preload-view preload-ctvs">
+                    <div class="clean-toolbar">
+                      <label class="clean-search">Tìm CTV
+                        <input type="search" placeholder="ID, họ tên, Zalo..." disabled>
+                      </label>
+                      <label>Sắp xếp
+                        <select disabled><option>Ngày tham gia</option></select>
+                      </label>
+                      <label>Chiều
+                        <select disabled><option>Mới/Z-A</option></select>
+                      </label>
+                    </div>
+                    <div class="clean-table ctv-table">
+                      <div class="clean-table-head">
+                        <span>ID</span>
+                        <span>Họ tên</span>
+                        <span>Ngày tham gia</span>
+                        <span>Số UV đã tuyển</span>
+                        <span>Link Zalo</span>
+                      </div>
+                      <div class="clean-table-empty"><strong>Đang tải dữ liệu...</strong></div>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </section>
+          </article>
+
+        </section>
+
+        <section class="panel" id="candidateBoardPanel" hidden>
+          <div class="panel-header">
+            <div>
+              <h2>Bảng xử lý nhanh ứng viên</h2>
+              <p class="muted">Nhìn nhanh ứng viên theo từng giai đoạn tuyển dụng.</p>
+            </div>
+            <button class="ghost-button" type="button">
+              <i data-lucide="calendar-days" aria-hidden="true"></i>
+              <span>Lịch phỏng vấn</span>
+            </button>
+          </div>
+          <div id="candidateBoard" class="kanban"></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="createOrderDialog" class="modal create-order-modal">
+      <form id="createOrderForm" class="modal-card create-order-card" novalidate>
+        <div class="modal-header">
+          <div>
+            <h2>Tạo nội dung và lưu đơn</h2>
+            <p class="muted">Paste text hoặc ảnh đơn, kiểm tra dữ liệu tách ra rồi lưu vào database riêng.</p>
+          </div>
+          <button id="closeCreateOrderModal" class="icon-button" type="button" aria-label="Đóng">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </div>
+
+        <div class="create-workspace">
+          <div class="create-input-column">
+            <section class="create-panel">
+              <h3>Paste text tóm tắt</h3>
+              <textarea id="rawOrderText" placeholder="Dán text đơn vào đây. Ví dụ:&#10;Mã đơn: AGT1&#10;Vị trí: Nhân viên khách sạn&#10;Nhóm ngành: Khách sạn&#10;Khu vực: Fukui&#10;Số lượng: 3"></textarea>
+              <div class="create-button-row">
+                <button id="parseOrderButton" class="primary-button" type="button">Tách dữ liệu</button>
+                <button id="clearCreateOrderButton" class="ghost-button" type="button">Xóa form</button>
+              </div>
+            </section>
+
+            <section class="create-panel">
+              <h3>Paste ảnh đơn</h3>
+              <div id="imagePasteBox" class="paste-image-box" role="button" aria-label="Paste ảnh đơn" tabindex="0">Bấm vào đây rồi Ctrl+V ảnh đơn</div>
+              <p id="imagePasteStatus" class="muted">Ảnh sẽ được dùng để đánh dấu đơn có hình ảnh.</p>
+              <div class="image-status-row" aria-label="Trạng thái ảnh và data ảnh">
+                <span id="createImageStatus" class="status-chip">Không ảnh</span>
+                <span id="createImageDataStatus" class="status-chip">Chưa có data ảnh</span>
+              </div>
+            </section>
+          </div>
+
+          <div class="create-preview-column">
+            <section class="create-panel">
+              <h3>Dữ liệu đã tách chuẩn</h3>
+              <div class="parsed-form-grid">
+                <label>
+                  <span>Mã đơn</span>
+                  <input name="code" type="text" placeholder="VD: AGT1" required />
+                </label>
+                <label>
+                  <span>Vị trí tuyển dụng</span>
+                  <input name="title" type="text" placeholder="VD: Nhân viên khách sạn" required />
+                </label>
+                <label>
+                  <span>Nhóm ngành / phòng ban</span>
+                  <input name="department" type="text" placeholder="VD: Xây dựng, Cơ khí/Sản xuất" required />
+                </label>
+                <label>
+                  <span>Khu vực</span>
+                  <input name="location" type="text" placeholder="VD: Fukui" />
+                </label>
+                <label>
+                  <span>Số lượng cần tuyển</span>
+                  <input name="headcount" type="number" min="0" value="1" required />
+                </label>
+                <label>
+                  <span>Trạng thái đơn</span>
+                  <select name="status">
+                    <option>Chờ duyệt</option>
+                    <option>Gấp</option>
+                    <option>Đúng tiến độ</option>
+                    <option>Sắp chốt</option>
+                  </select>
+                </label>
+              </div>
+            </section>
+
+            <section class="create-panel">
+              <h3>JSON lưu database/chatbot</h3>
+              <pre id="createOrderJson" class="json-preview">{}</pre>
+            </section>
+
+            <section class="create-panel preview-panel">
+              <div class="preview-panel-head">
+                <h3>Preview text Facebook</h3>
+                <button id="copyPreviewTextButton" class="ghost-button" type="button">Copy text</button>
+              </div>
+              <div class="facebook-preview" aria-label="Text dán lên nền Facebook">
+                <div class="facebook-preview-top">
+                  <span>Text nền Facebook</span>
+                  <span id="previewOrderCode" class="facebook-tag">Mã đơn: --</span>
+                </div>
+                <div class="facebook-preview-main">
+                  <h3 id="facebookPreviewText">Nhập hoặc tách dữ liệu để xem preview</h3>
+                  <p>Nền/ảnh nền chọn trực tiếp trên Facebook.</p>
+                </div>
+              </div>
+              <span id="copyPreviewStatus" class="copy-status"></span>
+            </section>
+          </div>
+        </div>
+
+        <p id="createOrderMessage" class="form-message" aria-live="polite"></p>
+
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" data-close-modal>Hủy</button>
+          <button class="primary-button" type="submit">
+            <i data-lucide="save" aria-hidden="true"></i>
+            <span>Lưu đơn</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="createCandidateDialog" class="modal create-candidate-modal">
+      <form id="createCandidateForm" class="modal-card create-candidate-card" novalidate>
+        <div class="modal-header">
+          <div>
+            <h2 id="candidateModalTitle">Thêm ứng viên</h2>
+            <p id="candidateModalDescription" class="muted">Nhập thông tin ứng viên mới và lưu trực tiếp vào database.</p>
+          </div>
+          <button id="closeCreateCandidateModal" class="icon-button" type="button" aria-label="Đóng">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </div>
+
+        <div class="candidate-form-grid">
+          <label>
+            <span>Họ tên</span>
+            <input name="fullName" type="text" placeholder="VD: Nguyễn Văn An" required />
+          </label>
+          <label>
+            <span>Đơn</span>
+            <input id="candidateOrderSearch" name="orderSearch" list="candidateOrderOptions" type="search" placeholder="Gõ mã đơn hoặc tên đơn..." autocomplete="off" required />
+            <datalist id="candidateOrderOptions"></datalist>
+            <input id="candidateOrderId" name="orderId" type="hidden" />
+            <input id="candidateRole" name="role" type="hidden" />
+          </label>
+          <label>
+            <span>Ngành của đơn</span>
+            <input id="candidateIndustryPreview" type="text" placeholder="Tự hiện khi chọn đơn" readonly />
+          </label>
+          <label>
+            <span>Trạng thái</span>
+            <input id="candidateStagePreview" type="text" value="Chờ PV" readonly />
+            <input name="stage" type="hidden" value="Chờ PV" />
+          </label>
+          <label>
+            <span>CTV / nguồn</span>
+            <input id="candidateCtvSearch" name="source" list="candidateCtvOptions" type="search" placeholder="Gõ tên hoặc ID CTV..." autocomplete="off" required />
+            <datalist id="candidateCtvOptions"></datalist>
+            <input id="candidateCtvId" name="ctvId" type="hidden" />
+          </label>
+          <label>
+            <span>Số điện thoại</span>
+            <input name="phone" type="tel" placeholder="VD: 090..." required />
+          </label>
+          <label>
+            <span>Email</span>
+            <input name="email" type="email" placeholder="email@example.com" required />
+          </label>
+          <label>
+            <span>Link Zalo</span>
+            <input name="zaloLink" type="url" placeholder="https://zalo.me/..." />
+          </label>
+          <label>
+            <span>Link nhóm</span>
+            <input name="groupLink" type="url" placeholder="https://..." />
+          </label>
+          <label class="modal-field-wide">
+            <span>Ghi chú</span>
+            <input name="note" type="text" placeholder="Thông tin thêm..." />
+          </label>
+        </div>
+
+        <p id="createCandidateMessage" class="form-message" aria-live="polite"></p>
+
+        <div class="modal-actions">
+          <button id="cancelCreateCandidate" class="ghost-button" type="button">Hủy</button>
+          <button class="primary-button" type="submit">
+            <i data-lucide="save" aria-hidden="true"></i>
+            <span id="candidateSubmitLabel">Lưu UV</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="detail-modal" id="orderDetailModal" hidden>
+      <div class="detail-modal-panel">
+        <div class="detail-modal-head">
+          <strong id="detailModalTitle">Chi tiết đơn</strong>
+          <button class="secondary" id="closeOrderDetailButton" type="button">Đóng</button>
+        </div>
+        <div class="order-detail" id="detailModalBody"></div>
+      </div>
+    </div>
+
+    <dialog id="deleteOrderDialog" class="delete-dialog">
+      <div class="delete-dialog-card">
+        <h2>Xóa đơn</h2>
+        <p id="deleteOrderText">Xác nhận xóa đơn?</p>
+        <p id="deleteOrderStatus" class="delete-status" aria-live="polite"></p>
+        <div class="delete-dialog-actions">
+          <button id="cancelDeleteOrder" class="dark-action" type="button">Hủy</button>
+          <button id="confirmDeleteOrder" class="red-action" type="button">Xóa đơn</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="deleteCandidateDialog" class="delete-dialog">
+      <div class="delete-dialog-card">
+        <h2>Xóa ứng viên</h2>
+        <p id="deleteCandidateText">Xác nhận xóa ứng viên?</p>
+        <p id="deleteCandidateStatus" class="delete-status" aria-live="polite"></p>
+        <div class="delete-dialog-actions">
+          <button id="cancelDeleteCandidate" class="dark-action" type="button">Hủy</button>
+          <button id="confirmDeleteCandidate" class="red-action" type="button">Xóa UV</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="interviewScheduleDialog" class="delete-dialog interview-schedule-dialog">
+      <div class="delete-dialog-card interview-schedule-card">
+        <div class="detail-dialog-header interview-schedule-header">
+          <h2 id="interviewScheduleTitle">Lịch PV</h2>
+          <div class="interview-header-actions">
+            <button id="editInterviewSchedule" class="row-icon-button" type="button" aria-label="Sửa lịch PV">
+              <i data-lucide="pencil" aria-hidden="true"></i>
+            </button>
+            <button id="closeInterviewSchedule" class="lightbox-close-button inline-close-button" type="button" aria-label="Đóng">×</button>
+          </div>
+        </div>
+        <div class="interview-schedule-body">
+          <div>
+            <span>Ngày PV</span>
+            <strong id="interviewScheduleDate">Chưa có lịch PV</strong>
+            <input id="interviewScheduleDateInput" type="date" hidden />
+          </div>
+          <div>
+            <span>Link PV</span>
+            <a id="interviewScheduleLink" class="table-link" href="#" target="_blank" rel="noopener">Chưa có link PV</a>
+            <input id="interviewScheduleLinkInput" type="url" placeholder="https://..." hidden />
+          </div>
+        </div>
+        <p id="interviewScheduleStatus" class="form-message" aria-live="polite"></p>
+        <div id="interviewScheduleActions" class="delete-dialog-actions" hidden>
+          <button id="cancelInterviewEdit" class="ghost-button" type="button">Hủy</button>
+          <button id="saveInterviewSchedule" class="primary-button" type="button">Lưu</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="imageLightboxDialog" class="image-lightbox-dialog">
+      <div class="image-lightbox-card">
+        <button id="closeImageLightbox" class="lightbox-close-button" type="button" aria-label="Đóng">×</button>
+        <img id="lightboxImage" alt="Ảnh đơn phóng to" />
+      </div>
+    </dialog>
+  </body>
+</html>
