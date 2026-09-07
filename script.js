@@ -15,20 +15,90 @@ const sectionTitles = {
 
 let imageDataReady = false;
 let editingOrderCode = "";
+let editingOrderSnapshot = null;
 let editingCandidateId = "";
 let editingApplicationId = "";
 let editingCandidateSnapshot = null;
 let pendingDeleteCode = "";
 let pendingDeleteCandidateId = "";
+let pendingDeleteCtvId = "";
 let currentOrders = [];
 let activeSection = localStorage.getItem("activeDashboardSection") || "orders";
 let currentCandidates = [];
 let currentCtvs = [];
 let currentApplications = [];
+let currentMetrics = null;
 let sectionRenderToken = 0;
 let candidatesLoaded = false;
 let ctvsLoaded = false;
 let activeInterviewApplicationId = "";
+const API_CACHE_TTL = 20000;
+const ORDER_DETAIL_CACHE_PREFIX = "orderDetail:";
+const apiCache = new Map();
+
+function getCachedApi(key) {
+  const item = apiCache.get(key);
+  if (!item) return null;
+  if (Date.now() - item.createdAt > API_CACHE_TTL) {
+    apiCache.delete(key);
+    return null;
+  }
+  return item.promise;
+}
+
+function loadCachedApi(key, loader) {
+  const cached = getCachedApi(key);
+  if (cached) return cached;
+  const promise = loader().catch((error) => {
+    apiCache.delete(key);
+    throw error;
+  });
+  apiCache.set(key, { createdAt: Date.now(), promise });
+  return promise;
+}
+
+function clearFrontendCache() {
+  apiCache.clear();
+  candidatesLoaded = false;
+  ctvsLoaded = false;
+}
+
+function getOrderDetailCacheKey(code) {
+  return `${ORDER_DETAIL_CACHE_PREFIX}${code}`;
+}
+
+function getPersistedOrderDetail(code, updatedAt = "") {
+  if (!code) return null;
+  try {
+    const cached = JSON.parse(localStorage.getItem(getOrderDetailCacheKey(code)) || "null");
+    if (!cached?.order) return null;
+    if (updatedAt && cached.updatedAt !== updatedAt) return null;
+    return cached.order;
+  } catch {
+    return null;
+  }
+}
+
+function persistOrderDetail(order) {
+  if (!order?.code) return;
+  try {
+    localStorage.setItem(
+      getOrderDetailCacheKey(order.code),
+      JSON.stringify({
+        updatedAt: order.updatedAt || "",
+        savedAt: Date.now(),
+        order,
+      }),
+    );
+  } catch {
+    localStorage.removeItem(getOrderDetailCacheKey(order.code));
+  }
+}
+
+function clearPersistedOrderDetail(code) {
+  if (!code) return;
+  localStorage.removeItem(getOrderDetailCacheKey(code));
+}
 
 function escapeHtml(value) {
   return value
@@ -42,6 +112,29 @@ function escapeHtml(value) {
 
 function formatShortId(value) {
   return String(value || "").slice(-3);
+}
+
+function sanitizeFileName(value) {
+  return String(value || "file")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 140) || "file";
+}
+
+function getImageExtension(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:image\/([a-zA-Z0-9.+-]+);/);
+  if (!match) return "png";
+  return match[1].toLowerCase().replace("jpeg", "jpg").replace("svg+xml", "svg");
+}
+
+function downloadDataUrl(dataUrl, fileName) {
+  const link = document.createElement("a");
+  link.href = dataUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 function showRequiredFieldsMessage(messageElement, fields) {
@@ -63,23 +156,19 @@ function getMissingCandidateFields(form, selectedOrder, selectedCtv) {
   if (!form.elements.fullName.value.trim()) fields.push("Họ tên");
   if (!selectedOrder?.id) fields.push("Đơn");
   if (!selectedCtv?.id) fields.push("CTV");
-  if (!form.elements.phone.value.trim()) fields.push("Số điện thoại");
-  if (!form.elements.email.value.trim()) fields.push("Email");
   return fields;
 }
 
 function normalizePhoneKey(value) {
-  let digits = String(value || "").replace(/\D/g, "");
-  if (digits.startsWith("0084")) {
-    digits = `0${digits.slice(4)}`;
-  } else if (digits.startsWith("84") && digits.length >= 10) {
-    digits = `0${digits.slice(2)}`;
-  }
-  return digits;
+  return String(value || "").trim();
+}
+
+function hasValidPhoneCharacters(value) {
+  return /^\d+$/.test(String(value || "").trim());
 }
 
 function isValidVietnamMobile(value) {
-  return /^0(?:3|5|7|8|9)\d{8}$/.test(normalizePhoneKey(value));
+  return hasValidPhoneCharacters(value) && /^0(?:3|5|7|8|9)\d{8}$/.test(normalizePhoneKey(value));
 }
 
 function isValidEmail(value) {
@@ -118,34 +207,70 @@ function hasComparableChanges(before, after) {
   return [...keys].some((key) => normalizedBefore[key] !== normalizedAfter[key]);
 }
 
+function normalizeJsonComparable(value) {
+  try {
+    return JSON.stringify(JSON.parse(value || "{}"));
+  } catch {
+    return normalizeComparableValue(value);
+  }
+}
+
+function buildOrderEditSnapshot(payload) {
+  return {
+    code: payload.code,
+    title: payload.title,
+    department: payload.department,
+    industry: payload.industry,
+    industries: Array.isArray(payload.industries) ? payload.industries.join("|") : payload.industries,
+    location: payload.location,
+    headcount: payload.headcount,
+    status: payload.status,
+    rawText: payload.rawText,
+    hasImage: payload.hasImage,
+    hasImageData: payload.hasImageData,
+    textUpFb: payload.textUpFb,
+    jobJson: normalizeJsonComparable(payload.jobJson),
+    imageDataUrl: payload.imageDataUrl,
+  };
+}
+
 async function loadDashboard() {
   const status = "all";
-  const search = document.getElementById("globalSearch").value.trim();
+  const search = "";
   const params = new URLSearchParams({ status, search });
-  const response = await fetch(`/api/dashboard?${params.toString()}`);
+  return loadCachedApi(`dashboard:${params.toString()}`, async () => {
+    const response = await fetch(`/api/dashboard?${params.toString()}`);
 
-  if (!response.ok) {
-    throw new Error("Không thể tải dữ liệu dashboard");
-  }
+    if (!response.ok) {
+      throw new Error("Không thể tải dữ liệu dashboard");
+    }
 
-  return response.json();
+    return response.json();
+  });
 }
 
 async function loadBootstrap() {
-  const search = document.getElementById("globalSearch").value.trim();
+  const search = "";
   const params = new URLSearchParams({ status: "all", search });
-  const response = await fetch(`/api/bootstrap?${params.toString()}`);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.message || "Không thể tải dữ liệu dashboard");
-  return data;
+  return loadCachedApi(`bootstrap:${params.toString()}`, async () => {
+    const response = await fetch(`/api/bootstrap?${params.toString()}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || "Không thể tải dữ liệu dashboard");
+    return data;
+  });
 }
 
-async function loadOrderDetail(code) {
+async function loadOrderDetail(code, updatedAt = "") {
+  const persisted = getPersistedOrderDetail(code, updatedAt);
+  if (persisted) return persisted;
   const params = new URLSearchParams({ code });
-  const response = await fetch(`/api/order-detail?${params.toString()}`);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.message || "Không thể tải chi tiết đơn");
-  return data.order;
+  return loadCachedApi(`order-detail:${params.toString()}`, async () => {
+    const response = await fetch(`/api/order-detail?${params.toString()}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || "Không thể tải chi tiết đơn");
+    persistOrderDetail(data.order);
+    return data.order;
+  });
 }
 
 async function ensureOrderDetail(order) {
@@ -153,8 +278,10 @@ async function ensureOrderDetail(order) {
   if ("imageDataUrl" in order && "rawText" in order && "textUpFb" in order && "jobJson" in order) {
     return order;
   }
-  const detail = await loadOrderDetail(order.code);
+  const persisted = getPersistedOrderDetail(order.code, order.updatedAt);
+  const detail = persisted || await loadOrderDetail(order.code, order.updatedAt);
   const merged = { ...order, ...detail };
+  persistOrderDetail(merged);
   currentOrders = currentOrders.map((item) => (item.code === merged.code ? merged : item));
   return merged;
 }
@@ -173,6 +300,8 @@ async function createOrder(payload) {
     throw new Error(data.message || "Không thể tạo đơn tuyển dụng");
   }
 
+  clearFrontendCache();
+  clearPersistedOrderDetail(payload.code);
   return data;
 }
 
@@ -190,6 +319,9 @@ async function updateOrder(originalCode, payload) {
     throw new Error(data.message || "Không thể cập nhật đơn tuyển dụng");
   }
 
+  clearFrontendCache();
+  clearPersistedOrderDetail(originalCode);
+  if (payload.code && payload.code !== originalCode) clearPersistedOrderDetail(payload.code);
   return data;
 }
 
@@ -203,14 +335,18 @@ async function deleteOrder(code) {
     throw new Error(data.message || "Không thể xóa đơn tuyển dụng");
   }
 
+  clearFrontendCache();
+  clearPersistedOrderDetail(code);
   return data;
 }
 
 async function loadCandidates() {
-  const response = await fetch("/api/candidates");
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.message || "Không thể tải ứng viên");
-  return data.candidates || [];
+  return loadCachedApi("candidates", async () => {
+    const response = await fetch("/api/candidates");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || "Không thể tải ứng viên");
+    return data.candidates || [];
+  });
 }
 
 async function createCandidate(payload) {
@@ -223,6 +359,7 @@ async function createCandidate(payload) {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Không thể tạo ứng viên");
+  clearFrontendCache();
   return data;
 }
 
@@ -236,6 +373,7 @@ async function updateCandidate(candidateId, payload) {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Không thể cập nhật ứng viên");
+  clearFrontendCache();
   return data;
 }
 
@@ -245,6 +383,17 @@ async function deleteCandidate(candidateId) {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Không thể xóa ứng viên");
+  clearFrontendCache();
+  return data;
+}
+
+async function deleteCtv(ctvId) {
+  const response = await fetch(`/api/ctvs/${encodeURIComponent(ctvId)}`, {
+    method: "DELETE",
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "Không thể xóa CTV");
+  clearFrontendCache();
   return data;
 }
 
@@ -258,6 +407,7 @@ async function createApplication(payload) {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Không thể gán ứng viên vào đơn");
+  clearFrontendCache();
   return data;
 }
 
@@ -271,21 +421,40 @@ async function updateApplication(applicationId, payload) {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Không thể cập nhật đơn tham gia");
+  clearFrontendCache();
   return data;
 }
 
 async function loadCtvs() {
-  const response = await fetch("/api/ctvs");
+  return loadCachedApi("ctvs", async () => {
+    const response = await fetch("/api/ctvs");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || "Không thể tải cộng tác viên");
+    return data.ctvs || [];
+  });
+}
+
+async function createCtv(payload) {
+  const response = await fetch("/api/ctvs", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.message || "Không thể tải cộng tác viên");
-  return data.ctvs || [];
+  if (!response.ok) throw new Error(data.message || "Không thể thêm CTV");
+  clearFrontendCache();
+  return data;
 }
 
 async function loadApplications() {
-  const response = await fetch("/api/applications");
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.message || "Không thể tải dữ liệu tham gia đơn");
-  return data.applications || [];
+  return loadCachedApi("applications", async () => {
+    const response = await fetch("/api/applications");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || "Không thể tải dữ liệu tham gia đơn");
+    return data.applications || [];
+  });
 }
 
 function normalizeText(text) {
@@ -325,14 +494,29 @@ function splitIndustries(value) {
       .map((part) => part.trim())
       .filter(Boolean)
       .forEach((industry) => {
-        const key = normalizeSearchText(industry);
+        const cleanIndustry = cleanIndustryLabel(industry);
+        const key = normalizeSearchText(cleanIndustry);
         if (!seen.has(key)) {
           seen.add(key);
-          industries.push(industry);
+          industries.push(cleanIndustry);
         }
       });
   });
   return industries;
+}
+
+function cleanIndustryLabel(value) {
+  const label = String(value || "")
+    .replace(/^[\s\-_/]*(?:jp|jpj|jjp|jpn)\b[\s\-_/]*/i, "")
+    .replace(/\b(?:jp|jpj|jjp|jpn)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const normalized = normalizeSearchText(label);
+  if (/xay dung|cot thep|gian giao|cong trinh|be tong|cong truong/.test(normalized)) return "Xây dựng";
+  if (/co khi|han|san xuat|factory|may/.test(normalized)) return "Cơ khí/Sản xuất";
+  if (/khach san|ve sinh|vstn|don dep/.test(normalized)) return "Khách sạn";
+  if (/thuc pham|che bien|food|nong nghiep/.test(normalized)) return "Thực phẩm";
+  return label || "Chưa có ngành";
 }
 
 function parseRawTextByRules(raw) {
@@ -674,11 +858,16 @@ function updateCreateImageBadges() {
 }
 
 function renderMetrics(metrics) {
+  currentMetrics = { ...metrics };
   document.getElementById("openOrdersMetric").textContent = metrics.openOrders;
-  document.getElementById("urgentOrdersMetric").textContent = `${metrics.urgentOrders} đơn ưu tiên cao`;
   document.getElementById("newCandidatesMetric").textContent = metrics.newCandidates;
   document.getElementById("interviewingMetric").textContent = metrics.interviewing;
   document.getElementById("activeCollaboratorsMetric").textContent = metrics.activeCollaborators;
+}
+
+function updateActiveCollaboratorsMetric(count) {
+  if (currentMetrics) currentMetrics.activeCollaborators = count;
+  document.getElementById("activeCollaboratorsMetric").textContent = count;
 }
 
 function getVisibleOrders(orders) {
@@ -761,7 +950,7 @@ function getOrderIndustries(order) {
   if (/agt|xay dung|cot thep|gian giao|be tong|cong truong|cong trinh|giai the|ky su quan ly cong trinh|ks qly cong trinh/.test(combined)) addIndustry("Xây dựng");
   if (/han|co khi|san xuat|factory|may/.test(combined)) addIndustry("Cơ khí/Sản xuất");
   if (/thuc pham|che bien|food|nong nghiep/.test(combined)) addIndustry("Thực phẩm");
-  if (!industries.length) addIndustry(rawIndustry || "Chưa có ngành");
+  if (!industries.length) addIndustry(cleanIndustryLabel(rawIndustry || "Chưa có ngành"));
 
   return industries;
 }
@@ -868,9 +1057,7 @@ function buildCandidateEditSnapshot(payload, selectedOrder, selectedCtv) {
     fullName: payload.fullName,
     phone: payload.phone,
     email: payload.email,
-    zaloLink: payload.zaloLink,
     groupLink: payload.groupLink,
-    note: payload.note,
     stage: payload.stage,
     orderId: selectedOrder?.id || "",
     role: selectedOrder ? getOrderIndustryLabel(selectedOrder) : "",
@@ -922,51 +1109,29 @@ function renderOrders(orders) {
 
             <div class="order-actions">
               <button class="dark-action" type="button" data-reopen-code="${escapeHtml(order.code)}">Mở lại</button>
-              <button class="dark-action" type="button">Copy text</button>
-              <button class="blue-action" type="button">Lưu cập nhật</button>
+              <button class="copy-text-action" type="button" data-copy-order-code="${escapeHtml(order.code)}">Copy text</button>
               <button class="red-action" type="button" data-delete-code="${escapeHtml(order.code)}">Xóa</button>
             </div>
 
             <div class="order-info">
-              ${getOrderIndustries(order)
-                .map((industry) => `<span class="industry-tag ${getIndustryTagClass(industry)}">${escapeHtml(industry)}</span>`)
-                .join("")}
+              <span class="order-industry-tags">
+                ${getOrderIndustries(order)
+                  .map((industry) => `<span class="industry-tag ${getIndustryTagClass(industry)}">${escapeHtml(industry)}</span>`)
+                  .join("")}
+              </span>
               <span class="meta-line"><b>Tỉnh</b><span>${escapeHtml(getOrderLocation(order))}</span></span>
-              <span class="meta-line"><b>Tạo</b><span>${escapeHtml(order.createdAt)}</span></span>
-              <span class="meta-line"><b>Đăng</b><span>${escapeHtml(order.postingStatus)}</span></span>
+              <span class="meta-line"><b>Tạo</b><span>${escapeHtml(formatShortDateTime(order.createdAt))}</span></span>
               <span class="badges" aria-label="Trạng thái dữ liệu">
                 <span class="badge ${order.hasImage ? "ok" : "warn"}">${order.hasImage ? "Có ảnh" : "Không ảnh"}</span>
                 <span class="badge ${order.hasImageData ? "ok" : "bad"}">${order.hasImageData ? "Có data ảnh" : "Chưa có data ảnh"}</span>
               </span>
             </div>
-          </div> 
-
-          <div class="order-posting">
-            <label>
-              <span>Trạng thái</span>
-              <select>
-                <option ${order.postingStatus === "Chưa đăng" ? "selected" : ""}>Chưa đăng</option>
-                <option ${order.postingStatus === "Đã đăng" ? "selected" : ""}>Đã đăng</option>
-                <option ${order.postingStatus === "Tạm dừng" ? "selected" : ""}>Tạm dừng</option>
-              </select>
-            </label>
-            <label>
-              <span>Nhóm đăng</span>
-              <input type="text" value="${escapeHtml(order.postingGroup)}" />
-            </label>
-            <label class="link-field">
-              <span>Link bài đăng</span>
-              <input type="url" value="${escapeHtml(order.postingLink)}" />
-            </label>
-            <label class="interaction-field">
-              <span>Tương tác</span>
-              <input type="number" min="0" value="${order.interactions}" />
-            </label>
           </div>
 
           <div class="order-more">
             <button class="detail-toggle" type="button" data-order-code="${escapeHtml(order.code)}">Chi tiết hình ảnh, text và JSON</button>
           </div>
+
         </article>
       `;
       },
@@ -991,11 +1156,53 @@ function renderOrders(orders) {
     button.addEventListener("click", async () => {
       const order = currentOrders.find((item) => item.code === button.dataset.reopenCode);
       if (!order) return;
+      const persisted = getPersistedOrderDetail(order.code, order.updatedAt);
+      if (persisted) {
+        reopenOrder({ ...order, ...persisted });
+        return;
+      }
+      reopenOrder(order, { loadingDetail: true });
       button.disabled = true;
       try {
-        reopenOrder(await ensureOrderDetail(order));
+        const detail = await ensureOrderDetail(order);
+        const dialog = document.getElementById("createOrderDialog");
+        if (dialog.open && editingOrderCode === detail.code) {
+          reopenOrder(detail);
+        }
       } catch (error) {
         console.error(error);
+        document.getElementById("createOrderMessage").textContent = error.message || "Không thể tải dữ liệu đã lưu.";
+        document.getElementById("createOrderMessage").className = "form-message error";
+        document.getElementById("createOrderForm").querySelector('button[type="submit"]').disabled = false;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+  list.querySelectorAll("[data-copy-order-code]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const order = currentOrders.find((item) => item.code === button.dataset.copyOrderCode);
+      if (!order) return;
+      button.disabled = true;
+      const originalLabel = button.textContent;
+      try {
+        const detail = await ensureOrderDetail(order);
+        const fallbackText = makeShortText(buildJobDataFromOrder(detail));
+        const text = (detail.textUpFb || fallbackText || "").trim();
+        if (!text) throw new Error("Đơn này chưa có text up Facebook.");
+        await navigator.clipboard.writeText(text);
+        button.textContent = "Đã copy";
+        button.classList.add("copied");
+        setTimeout(() => {
+          button.textContent = originalLabel;
+          button.classList.remove("copied");
+        }, 1200);
+      } catch (error) {
+        console.error(error);
+        button.textContent = "Lỗi copy";
+        setTimeout(() => {
+          button.textContent = originalLabel;
+        }, 1200);
       } finally {
         button.disabled = false;
       }
@@ -1007,46 +1214,7 @@ function renderOrders(orders) {
       openDeleteDialog(order || { code: button.dataset.deleteCode, title: "" });
     });
   });
-}
-
-function renderCandidateBoard(candidates) {
-  const board = document.getElementById("candidateBoard");
-  const entries = Object.entries(candidates);
-  const hasCandidates = entries.some(([, items]) => items.length > 0);
-
-  if (!hasCandidates) {
-    board.innerHTML = `
-      <div class="empty-state board-empty">
-        <strong>Chưa có ứng viên trong database</strong>
-        <span>Bot có thể ghi ứng viên mới vào SQLite, dashboard sẽ đọc lại từ API local.</span>
-      </div>
-    `;
-    return;
-  }
-
-  board.innerHTML = entries
-    .map(
-      ([stage, items]) => `
-        <div class="kanban-column">
-          <div class="kanban-title">
-            <span>${escapeHtml(stage)}</span>
-            <span>${items.length}</span>
-          </div>
-          ${items
-            .map(
-              (candidate) => `
-                <article class="candidate-card">
-                  <strong>${escapeHtml(candidate.name)}</strong>
-                  <small class="muted">${escapeHtml(candidate.role)}</small>
-                  <span class="badge">${escapeHtml(candidate.source)}</span>
-                </article>
-              `,
-            )
-            .join("")}
-        </div>
-      `,
-    )
-    .join("");
+  if (window.lucide) window.lucide.createIcons();
 }
 
 function getCandidateApplication(candidate) {
@@ -1134,7 +1302,31 @@ function formatShortDate(value) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return `${date.getDate()}/${date.getMonth() + 1}/${String(date.getFullYear()).slice(-2)}`;
+  const parts = new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+  }).formatToParts(date);
+  const getPart = (type) => parts.find((part) => part.type === type)?.value || "";
+  return `${getPart("day")}/${getPart("month")}/${getPart("year")}`;
+}
+
+function formatShortDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const parts = new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const getPart = (type) => parts.find((part) => part.type === type)?.value || "";
+  return `${getPart("day")}/${getPart("month")}/${getPart("year")} ${getPart("hour")}:${getPart("minute")}`;
 }
 
 function getCandidateLink(candidate, keys) {
@@ -1344,6 +1536,7 @@ function renderCandidateTable(candidates) {
 
 function renderCtvTable(ctvs) {
   const list = document.getElementById("orderList") || document.getElementById("ordersList");
+  updateActiveCollaboratorsMetric(ctvs.length);
   const search = document.getElementById("ctvSearch")?.value.trim() || "";
   const sortBy = document.getElementById("ctvSortBy")?.value || "createdAt";
   const direction = document.getElementById("ctvSortDirection")?.value || "desc";
@@ -1394,6 +1587,8 @@ function renderCtvTable(ctvs) {
         <span>Họ tên</span>
         <span>Ngày tham gia</span>
         <span>Số UV đã tuyển</span>
+        <span>Chi tiết</span>
+        <span>Xóa</span>
       </div>
       ${visibleCtvs.length === 0 ? `
         <div class="clean-table-empty">
@@ -1410,6 +1605,8 @@ function renderCtvTable(ctvs) {
               ${renderLinkedName(ctv.fullName || ctv.name, zaloLink)}
               <span>${escapeHtml(formatShortDate(ctv.createdAt))}</span>
               <span><span class="badge">${getCtvRecruitedCount(ctv)}</span></span>
+              <span><button class="table-link table-link-button" type="button" data-ctv-detail-id="${escapeHtml(ctv.id || "")}">Chi tiết</button></span>
+              <span><button class="row-delete-button" type="button" data-delete-ctv-id="${escapeHtml(ctv.id || "")}" data-delete-ctv-name="${escapeHtml(ctv.fullName || ctv.name || "CTV")}">Xóa</button></span>
             </div>
           `;
           },
@@ -1417,6 +1614,17 @@ function renderCtvTable(ctvs) {
         .join("")}
     </div>
   `;
+  list.querySelectorAll("[data-ctv-detail-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const ctv = currentCtvs.find((item) => item.id === button.dataset.ctvDetailId);
+      if (ctv) openCtvDetail(ctv);
+    });
+  });
+  list.querySelectorAll("[data-delete-ctv-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openDeleteCtvDialog(button.dataset.deleteCtvId, button.dataset.deleteCtvName || "CTV");
+    });
+  });
   bindPeopleToolbars();
 }
 
@@ -1519,6 +1727,8 @@ function renderCtvLoadingTable() {
         <span>Họ tên</span>
         <span>Ngày tham gia</span>
         <span>Số UV đã tuyển</span>
+        <span>Chi tiết</span>
+        <span>Xóa</span>
       </div>
       <div class="clean-table-empty">
         <strong>Đang tải dữ liệu...</strong>
@@ -1533,7 +1743,6 @@ async function renderActiveSection() {
   document.querySelectorAll("[data-orders-only]").forEach((item) => {
     item.hidden = section !== "orders";
   });
-  document.getElementById("candidateBoardPanel").hidden = section !== "candidates";
   const list = document.getElementById("orderList") || document.getElementById("ordersList");
 
   if (section === "orders") {
@@ -1544,7 +1753,9 @@ async function renderActiveSection() {
   if (section === "candidates") {
     if (candidatesLoaded) {
       renderCandidateTable(currentCandidates);
-    } else if (!list.querySelector("#candidateSearch, .preload-candidates")) {
+      return;
+    }
+    if (!list.querySelector("#candidateSearch, .preload-candidates")) {
       renderCandidateLoadingTable();
     }
     const [candidates, applications] = await Promise.all([loadCandidates(), loadApplications()]);
@@ -1558,7 +1769,9 @@ async function renderActiveSection() {
 
   if (ctvsLoaded) {
     renderCtvTable(currentCtvs);
-  } else if (!list.querySelector("#ctvSearch, .preload-ctvs")) {
+    return;
+  }
+  if (!list.querySelector("#ctvSearch, .preload-ctvs")) {
     renderCtvLoadingTable();
   }
   const ctvs = await loadCtvs();
@@ -1570,7 +1783,17 @@ async function renderActiveSection() {
 
 async function refreshDashboard() {
   try {
-    const bootstrap = activeSection === "orders" ? null : await loadBootstrap();
+    if (activeSection === "collaborators") {
+      const [data, ctvs] = await Promise.all([loadDashboard(), loadCtvs()]);
+      currentOrders = data.orders;
+      currentCtvs = ctvs;
+      ctvsLoaded = true;
+      renderMetrics(data.metrics);
+      renderCtvTable(currentCtvs);
+      return;
+    }
+
+    const bootstrap = activeSection === "candidates" ? await loadBootstrap() : null;
     const data = bootstrap?.dashboard || await loadDashboard();
     currentOrders = data.orders;
     if (bootstrap && activeSection === "candidates") {
@@ -1579,13 +1802,9 @@ async function refreshDashboard() {
       currentCtvs = bootstrap.ctvs || [];
       candidatesLoaded = true;
       ctvsLoaded = true;
-    } else if (bootstrap && activeSection === "collaborators") {
-      currentCtvs = bootstrap.ctvs || [];
-      ctvsLoaded = true;
     }
     renderMetrics(data.metrics);
     await renderActiveSection();
-    renderCandidateBoard(data.candidates);
   } catch (error) {
     const list = document.getElementById("orderList") || document.getElementById("ordersList");
     list.innerHTML = `
@@ -1640,19 +1859,13 @@ function updateTopbarCreateButton() {
   if (activeSection === "candidates") {
     label.textContent = "Thêm UV";
     button.setAttribute("aria-label", "Thêm ứng viên");
+  } else if (activeSection === "collaborators") {
+    label.textContent = "Thêm CTV";
+    button.setAttribute("aria-label", "Thêm cộng tác viên");
   } else {
     label.textContent = "Tạo đơn";
     button.setAttribute("aria-label", "Tạo đơn");
   }
-}
-
-function bindSegmentedControl() {
-  document.querySelectorAll(".segmented button").forEach((button) => {
-    button.addEventListener("click", () => {
-      document.querySelectorAll(".segmented button").forEach((item) => item.classList.remove("is-selected"));
-      button.classList.add("is-selected");
-    });
-  });
 }
 
 function formatJsonForDetail(value) {
@@ -1671,15 +1884,22 @@ function openOrderDetail(order) {
   const hasSavedJson = order.jobJson && order.jobJson !== "{}";
   const jsonText = hasSavedJson ? formatJsonForDetail(order.jobJson) : fallbackJson;
   const textUpFb = order.textUpFb || fallbackText || "Chưa có text up FB";
+  const imageFileName = `${sanitizeFileName(`${order.code} - ${getOrderShortTitle(order)}`)}.${getImageExtension(order.imageDataUrl)}`;
 
   document.getElementById("detailModalTitle").textContent = `${order.code} - ${getOrderShortTitle(order)}`;
   document.getElementById("detailModalBody").innerHTML = `
     <div class="detail-box">
-      <strong>Hình ảnh</strong>
+      <div class="detail-box-head">
+        <strong>Hình ảnh</strong>
+        ${order.imageDataUrl ? `<button class="detail-action-button" type="button" data-save-order-image="${escapeHtml(order.imageDataUrl)}" data-image-file-name="${escapeHtml(imageFileName)}">Lưu hình ảnh về máy</button>` : ""}
+      </div>
       <div class="order-image">${order.imageDataUrl ? `<button class="image-preview-button" type="button" data-image-src="${escapeHtml(order.imageDataUrl)}"><img alt="Ảnh đơn ${escapeHtml(order.code)}" src="${escapeHtml(order.imageDataUrl)}"></button>` : "Chưa có hình ảnh"}</div>
     </div>
     <div class="detail-box">
-      <strong>Text up FB</strong>
+      <div class="detail-box-head">
+        <strong>Text up FB</strong>
+        <button class="detail-action-button" type="button" data-copy-detail-text="${escapeHtml(textUpFb)}">Copy text</button>
+      </div>
       <pre>${escapeHtml(textUpFb)}</pre>
     </div>
     <div class="detail-box">
@@ -1688,6 +1908,25 @@ function openOrderDetail(order) {
     </div>
   `;
   modal.hidden = false;
+}
+
+function detailValue(value) {
+  return escapeHtml(value || "Chưa có");
+}
+
+function openCtvDetail(ctv) {
+  document.getElementById("detailModalTitle").textContent = `Chi tiết CTV - ${ctv.fullName || ctv.name || "Chưa có tên"}`;
+  document.getElementById("detailModalBody").innerHTML = `
+    <div class="detail-box person-detail-box">
+      <dl class="detail-list ctv-detail-list">
+        <div><dt>ID</dt><dd>${detailValue(formatShortId(ctv.id))}</dd></div>
+        <div><dt>Họ tên</dt><dd>${detailValue(ctv.fullName || ctv.name)}</dd></div>
+        <div><dt>Số điện thoại</dt><dd>${detailValue(ctv.phone)}</dd></div>
+        <div><dt>Email</dt><dd>${detailValue(ctv.email)}</dd></div>
+      </dl>
+    </div>
+  `;
+  document.getElementById("orderDetailModal").hidden = false;
 }
 
 function closeOrderDetail() {
@@ -1709,14 +1948,55 @@ function bindOrderDetailDialog() {
   const modal = document.getElementById("orderDetailModal");
   document.getElementById("closeOrderDetailButton").addEventListener("click", closeOrderDetail);
   document.getElementById("detailModalBody").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-image-src]");
-    if (button) openImageLightbox(button.dataset.imageSrc);
+    const saveImageButton = event.target.closest("[data-save-order-image]");
+    if (saveImageButton) {
+      if (saveImageButton.disabled) return;
+      saveImageButton.disabled = true;
+      downloadDataUrl(saveImageButton.dataset.saveOrderImage, saveImageButton.dataset.imageFileName || "order-image.png");
+      saveImageButton.textContent = "Đã lưu";
+      saveImageButton.classList.add("is-success");
+      setTimeout(() => {
+        saveImageButton.textContent = "Lưu hình ảnh về máy";
+        saveImageButton.classList.remove("is-success");
+        saveImageButton.disabled = false;
+      }, 5000);
+      return;
+    }
+
+    const copyTextButton = event.target.closest("[data-copy-detail-text]");
+    if (copyTextButton) {
+      if (copyTextButton.disabled) return;
+      copyTextButton.disabled = true;
+      navigator.clipboard.writeText(copyTextButton.dataset.copyDetailText || "").then(() => {
+        copyTextButton.textContent = "Đã copy";
+        copyTextButton.classList.add("is-success");
+        setTimeout(() => {
+          copyTextButton.textContent = "Copy text";
+          copyTextButton.classList.remove("is-success");
+          copyTextButton.disabled = false;
+        }, 5000);
+      }).catch((error) => {
+        console.error(error);
+        copyTextButton.disabled = false;
+      });
+      return;
+    }
+
+    const imageButton = event.target.closest("[data-image-src]");
+    if (imageButton) openImageLightbox(imageButton.dataset.imageSrc);
+
+    const deleteCtvButton = event.target.closest("[data-delete-ctv-id]");
+    if (deleteCtvButton) {
+      closeOrderDetail();
+      openDeleteCtvDialog(deleteCtvButton.dataset.deleteCtvId, deleteCtvButton.dataset.deleteCtvName || "CTV");
+    }
   });
   modal.addEventListener("click", (event) => {
     if (event.target === modal) closeOrderDetail();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !modal.hidden) closeOrderDetail();
+    const lightbox = document.getElementById("imageLightboxDialog");
+    if (event.key === "Escape" && !modal.hidden && !lightbox.open) closeOrderDetail();
   });
 }
 
@@ -1724,10 +2004,14 @@ function bindImageLightbox() {
   const dialog = document.getElementById("imageLightboxDialog");
   document.getElementById("closeImageLightbox").addEventListener("click", closeImageLightbox);
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) closeImageLightbox();
+    if (!event.target.closest("#lightboxImage")) closeImageLightbox();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && dialog.open) closeImageLightbox();
+    if (event.key === "Escape" && dialog.open) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeImageLightbox();
+    }
   });
 }
 
@@ -1833,6 +2117,64 @@ function bindDeleteCandidateDialog() {
   });
 }
 
+function openDeleteCtvDialog(ctvId, ctvName) {
+  if (!ctvId) return;
+  pendingDeleteCtvId = ctvId;
+  document.getElementById("deleteCtvText").textContent = `Xác nhận xóa ${ctvName || "CTV"}?`;
+  document.getElementById("deleteCtvStatus").textContent = "";
+  document.getElementById("confirmDeleteCtv").disabled = false;
+  document.getElementById("cancelDeleteCtv").disabled = false;
+  document.getElementById("deleteCtvDialog").showModal();
+}
+
+function closeDeleteCtvDialog() {
+  const dialog = document.getElementById("deleteCtvDialog");
+  pendingDeleteCtvId = "";
+  if (dialog.open) dialog.close();
+}
+
+function bindDeleteCtvDialog() {
+  const dialog = document.getElementById("deleteCtvDialog");
+  const confirmButton = document.getElementById("confirmDeleteCtv");
+  const cancelButton = document.getElementById("cancelDeleteCtv");
+  const status = document.getElementById("deleteCtvStatus");
+
+  cancelButton.addEventListener("click", () => {
+    if (!cancelButton.disabled) closeDeleteCtvDialog();
+  });
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog && !cancelButton.disabled) closeDeleteCtvDialog();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && dialog.open && !cancelButton.disabled) closeDeleteCtvDialog();
+  });
+
+  confirmButton.addEventListener("click", async () => {
+    if (!pendingDeleteCtvId) return;
+    const ctvId = pendingDeleteCtvId;
+    confirmButton.disabled = true;
+    cancelButton.disabled = true;
+    status.textContent = "Đang xóa CTV...";
+
+    try {
+      await deleteCtv(ctvId);
+      currentCtvs = currentCtvs.filter((ctv) => ctv.id !== ctvId);
+      ctvsLoaded = true;
+      populateCandidateCtvOptions();
+      updateActiveCollaboratorsMetric(currentCtvs.length);
+      renderCtvTable(currentCtvs);
+      closeDeleteCtvDialog();
+    } catch (error) {
+      console.error(error);
+      pendingDeleteCtvId = ctvId;
+      status.textContent = error.message || "Không thể xóa CTV";
+      if (!dialog.open) dialog.showModal();
+      confirmButton.disabled = false;
+      cancelButton.disabled = false;
+    }
+  });
+}
+
 function setCreateDialogMode(mode) {
   const heading = document.querySelector("#createOrderDialog .modal-header h2");
   const submitLabel = document.querySelector('#createOrderForm button[type="submit"] span');
@@ -1850,6 +2192,7 @@ function resetCreateOrderForm() {
   form.reset();
   form.elements.headcount.value = 1;
   editingOrderCode = "";
+  editingOrderSnapshot = null;
   imageDataReady = false;
   document.getElementById("rawOrderText").value = "";
   document.getElementById("imagePasteBox").textContent = "Bấm vào đây rồi Ctrl+V ảnh đơn";
@@ -1861,9 +2204,11 @@ function resetCreateOrderForm() {
   updateCreatePreview();
 }
 
-function reopenOrder(order) {
+function reopenOrder(order, options = {}) {
   const form = document.getElementById("createOrderForm");
   const dialog = document.getElementById("createOrderDialog");
+  const submitButton = form.querySelector('button[type="submit"]');
+  const isLoadingDetail = Boolean(options.loadingDetail);
   editingOrderCode = order.code;
   imageDataReady = Boolean(order.hasImageData);
   const fallbackJobData = buildJobDataFromOrder(order);
@@ -1890,10 +2235,12 @@ function reopenOrder(order) {
   document.getElementById("facebookPreviewText").innerHTML = escapeHtml(order.textUpFb || fallbackText).replace(/\n/g, "<br>");
   document.getElementById("previewOrderCode").textContent = `Mã đơn: ${order.code || "--"}`;
   document.getElementById("createOrderJson").textContent = order.jobJson && order.jobJson !== "{}" ? formatJsonForDetail(order.jobJson) : fallbackJson;
-  document.getElementById("createOrderMessage").textContent = "";
+  document.getElementById("createOrderMessage").textContent = isLoadingDetail ? "Đang tải dữ liệu đã lưu..." : "";
   document.getElementById("createOrderMessage").className = "form-message";
   updateCreateImageBadges();
-  dialog.showModal();
+  editingOrderSnapshot = isLoadingDetail ? null : buildOrderEditSnapshot(getCreateOrderFormData());
+  if (submitButton) submitButton.disabled = isLoadingDetail;
+  if (!dialog.open) dialog.showModal();
 }
 
 function readJsonValue(value, key) {
@@ -1964,6 +2311,10 @@ function bindCreateOrderModal() {
       });
       return;
     }
+    if (activeSection === "collaborators") {
+      openCreateCtvModal();
+      return;
+    }
     resetCreateOrderForm();
     dialog.showModal();
   });
@@ -2029,6 +2380,12 @@ function bindCreateOrderModal() {
       return;
     }
     const payload = getCreateOrderFormData();
+
+    if (editingOrderCode && !hasComparableChanges(editingOrderSnapshot, buildOrderEditSnapshot(payload))) {
+      message.textContent = "Chưa có thay đổi để cập nhật.";
+      message.className = "form-message";
+      return;
+    }
 
     message.textContent = "Đang lưu đơn...";
     message.className = "form-message";
@@ -2106,9 +2463,7 @@ async function openEditCandidateModal(candidateId) {
   form.elements.fullName.value = candidate.fullName || candidate.name || "";
   form.elements.phone.value = candidate.phone || "";
   form.elements.email.value = candidate.email || "";
-  form.elements.zaloLink.value = candidate.zaloLink || "";
   form.elements.groupLink.value = getCandidateGroupLink(candidate, application) || "";
-  form.elements.note.value = candidate.note || application?.note || "";
   form.elements.stage.value = status;
   document.getElementById("candidateStagePreview").value = status;
   document.getElementById("candidateOrderSearch").value = order ? getOrderSearchLabel(order) : "";
@@ -2160,19 +2515,26 @@ function bindCreateCandidateModal() {
       } else if (!selectedCtv?.id) {
         document.getElementById("candidateCtvSearch").focus();
       } else {
-        form.elements.phone.focus();
+        form.elements.fullName.focus();
       }
       return;
     }
 
-    if (!isValidVietnamMobile(payload.phone)) {
+    if (payload.phone?.trim() && !hasValidPhoneCharacters(payload.phone)) {
+      message.textContent = "SĐT ứng viên chỉ được nhập số.";
+      message.className = "form-message error";
+      form.elements.phone.focus();
+      return;
+    }
+
+    if (payload.phone?.trim() && !isValidVietnamMobile(payload.phone)) {
       message.textContent = "SĐT ứng viên không đúng định dạng. Vui lòng nhập số di động Việt Nam 10 số.";
       message.className = "form-message error";
       form.elements.phone.focus();
       return;
     }
 
-    if (!isValidEmail(payload.email)) {
+    if (payload.email?.trim() && !isValidEmail(payload.email)) {
       message.textContent = "Email ứng viên không đúng định dạng.";
       message.className = "form-message error";
       form.elements.email.focus();
@@ -2393,19 +2755,109 @@ function bindInterviewScheduleDialog() {
   });
 }
 
+function openCreateCtvModal() {
+  const form = document.getElementById("createCtvForm");
+  const message = document.getElementById("createCtvMessage");
+  form.reset();
+  message.textContent = "";
+  message.className = "form-message";
+  document.getElementById("createCtvDialog").showModal();
+  form.elements.fullName.focus();
+}
+
+function closeCreateCtvModal() {
+  const dialog = document.getElementById("createCtvDialog");
+  if (dialog.open) dialog.close();
+}
+
+function bindCreateCtvModal() {
+  const dialog = document.getElementById("createCtvDialog");
+  const form = document.getElementById("createCtvForm");
+  const message = document.getElementById("createCtvMessage");
+  const submitButton = form.querySelector('button[type="submit"]');
+
+  document.getElementById("closeCreateCtvModal").addEventListener("click", closeCreateCtvModal);
+  document.getElementById("cancelCreateCtv").addEventListener("click", closeCreateCtvModal);
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) closeCreateCtvModal();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && dialog.open) closeCreateCtvModal();
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const payload = Object.fromEntries(new FormData(form).entries());
+    const missingFields = [];
+    if (!payload.fullName?.trim()) missingFields.push("Họ tên");
+    if (!payload.phone?.trim()) missingFields.push("Số điện thoại");
+
+    if (missingFields.length) {
+      message.textContent = `Vui lòng nhập/chọn: ${missingFields.join(", ")}.`;
+      message.className = "form-message error";
+      if (!payload.fullName?.trim()) {
+        form.elements.fullName.focus();
+      } else {
+        form.elements.phone.focus();
+      }
+      return;
+    }
+
+    if (!hasValidPhoneCharacters(payload.phone)) {
+      message.textContent = "SĐT CTV chỉ được nhập số.";
+      message.className = "form-message error";
+      form.elements.phone.focus();
+      return;
+    }
+
+    if (!isValidVietnamMobile(payload.phone)) {
+      message.textContent = "SĐT CTV không đúng định dạng. Vui lòng nhập số di động Việt Nam 10 số.";
+      message.className = "form-message error";
+      form.elements.phone.focus();
+      return;
+    }
+
+    if (payload.email?.trim() && !isValidEmail(payload.email)) {
+      message.textContent = "Email CTV không đúng định dạng.";
+      message.className = "form-message error";
+      form.elements.email.focus();
+      return;
+    }
+
+    message.textContent = "Đang lưu CTV...";
+    message.className = "form-message";
+    submitButton.disabled = true;
+    try {
+      await createCtv(payload);
+      currentCtvs = await loadCtvs();
+      ctvsLoaded = true;
+      populateCandidateCtvOptions();
+      renderCtvTable(currentCtvs);
+      message.textContent = "Đã thêm CTV.";
+      message.className = "form-message success";
+      setTimeout(closeCreateCtvModal, 450);
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = "form-message error";
+    } finally {
+      submitButton.disabled = false;
+    }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   applyActiveNavigation();
   bindNavigation();
-  bindSegmentedControl();
   bindOrderDetailDialog();
   bindImageLightbox();
   bindDeleteOrderDialog();
   bindDeleteCandidateDialog();
+  bindDeleteCtvDialog();
   bindCreateOrderModal();
   bindCreateCandidateModal();
+  bindCreateCtvModal();
   bindInterviewScheduleDialog();
 
-  document.getElementById("globalSearch").addEventListener("input", refreshDashboard);
   ["orderSearch", "orderSortBy", "orderSortDirection"].forEach((id) => {
     document.getElementById(id)?.addEventListener("input", () => renderOrders(currentOrders));
     document.getElementById(id)?.addEventListener("change", () => renderOrders(currentOrders));

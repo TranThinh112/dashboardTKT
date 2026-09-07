@@ -7,9 +7,9 @@
     <script>
       document.documentElement.dataset.activeSection = localStorage.getItem("activeDashboardSection") || "orders";
     </script>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260907-phone-digits" />
     <script defer src="https://unpkg.com/lucide@latest"></script>
-    <script defer src="./script.js"></script>
+    <script defer src="./script.js?v=20260907-phone-digits"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -43,10 +43,6 @@
 
       <main class="main-content">
         <header class="topbar">
-          <label class="search-box">
-            <i data-lucide="search" aria-hidden="true"></i>
-            <input id="globalSearch" type="search" placeholder="Tìm mã đơn, vị trí, ứng viên, cộng tác viên..." />
-          </label>
           <div class="topbar-actions">
             <button class="icon-button" type="button" aria-label="Bộ lọc">
               <i data-lucide="sliders-horizontal" aria-hidden="true"></i>
@@ -67,33 +63,24 @@
             <h1 id="pageTitle">Dashboard tuyển dụng</h1>
             <p class="muted">Theo dõi nhu cầu tuyển, pipeline ứng viên và hiệu quả cộng tác viên trong một màn hình.</p>
           </div>
-          <div class="segmented" role="tablist" aria-label="Chế độ xem">
-            <button class="is-selected" type="button">Tổng quan</button>
-            <button type="button">Cần xử lý</button>
-            <button type="button">Báo cáo</button>
-          </div>
         </section>
 
         <section class="metrics-grid" aria-label="Chỉ số tổng quan">
           <article class="metric-card">
             <span>Đơn đang mở</span>
             <strong id="openOrdersMetric">0</strong>
-            <small id="urgentOrdersMetric">0 đơn ưu tiên cao</small>
           </article>
           <article class="metric-card">
             <span>Ứng viên</span>
             <strong id="newCandidatesMetric">0</strong>
-            <small>Tổng ứng viên trong database</small>
           </article>
           <article class="metric-card">
             <span>Chờ về Công Ty</span>
             <strong id="interviewingMetric">0</strong>
-            <small>Ứng viên ở trạng thái chờ về công ty</small>
           </article>
           <article class="metric-card">
             <span>CTV hoạt động</span>
             <strong id="activeCollaboratorsMetric">0</strong>
-            <small>Cộng tác viên trong database</small>
           </article>
         </section>
 
@@ -102,32 +89,6 @@
             <section class="samples">
               <article class="sample-card">
                 <h2 id="primaryPanelTitle">Quản lý đơn đã tạo</h2>
-
-                <div class="manager-toolbar" data-orders-only>
-                  <div class="manager-grid">
-                    <label>Trạng thái
-                      <select id="postStatus">
-                        <option value="Chưa đăng">Chưa đăng</option>
-                        <option value="Đã đăng">Đã đăng</option>
-                        <option value="Tạm dừng">Tạm dừng</option>
-                      </select>
-                    </label>
-                    <label>Nhóm đăng
-                      <input id="postedGroup" placeholder="VD: Group Tokutei Osaka">
-                    </label>
-                    <label>Link bài đăng
-                      <input id="postLink" placeholder="https://facebook.com/...">
-                    </label>
-                    <label>Tương tác
-                      <input id="engagementCount" type="number" min="0" placeholder="0">
-                    </label>
-                  </div>
-
-                  <div class="copy-row">
-                    <button id="saveOrderButton" type="button">Lưu đơn hiện tại</button>
-                    <span class="copy-status" id="managerStatus"></span>
-                  </div>
-                </div>
 
                 <div class="sort-toolbar" data-orders-only>
                   <label class="search-label">Tìm đơn
@@ -195,7 +156,8 @@
                         <span>Họ tên</span>
                         <span>Ngày tham gia</span>
                         <span>Số UV đã tuyển</span>
-                        <span>Link Zalo</span>
+                        <span>Chi tiết</span>
+                        <span>Xóa</span>
                       </div>
                       <div class="clean-table-empty"><strong>Đang tải dữ liệu...</strong></div>
                     </div>
@@ -205,20 +167,6 @@
             </section>
           </article>
 
-        </section>
-
-        <section class="panel" id="candidateBoardPanel" hidden>
-          <div class="panel-header">
-            <div>
-              <h2>Bảng xử lý nhanh ứng viên</h2>
-              <p class="muted">Nhìn nhanh ứng viên theo từng giai đoạn tuyển dụng.</p>
-            </div>
-            <button class="ghost-button" type="button">
-              <i data-lucide="calendar-days" aria-hidden="true"></i>
-              <span>Lịch phỏng vấn</span>
-            </button>
-          </div>
-          <div id="candidateBoard" class="kanban"></div>
         </section>
       </main>
     </div>
@@ -371,23 +319,15 @@
           </label>
           <label>
             <span>Số điện thoại</span>
-            <input name="phone" type="tel" placeholder="VD: 090..." required />
+            <input name="phone" type="tel" placeholder="VD: 090..." />
           </label>
           <label>
             <span>Email</span>
-            <input name="email" type="email" placeholder="email@example.com" required />
-          </label>
-          <label>
-            <span>Link Zalo</span>
-            <input name="zaloLink" type="url" placeholder="https://zalo.me/..." />
+            <input name="email" type="email" placeholder="email@example.com" />
           </label>
           <label>
             <span>Link nhóm</span>
             <input name="groupLink" type="url" placeholder="https://..." />
-          </label>
-          <label class="modal-field-wide">
-            <span>Ghi chú</span>
-            <input name="note" type="text" placeholder="Thông tin thêm..." />
           </label>
         </div>
 
@@ -398,6 +338,45 @@
           <button class="primary-button" type="submit">
             <i data-lucide="save" aria-hidden="true"></i>
             <span id="candidateSubmitLabel">Lưu UV</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="createCtvDialog" class="modal create-ctv-modal">
+      <form id="createCtvForm" class="modal-card create-ctv-card" novalidate>
+        <div class="modal-header">
+          <div>
+            <h2>Thêm CTV</h2>
+            <p class="muted">Lưu cộng tác viên mới trực tiếp vào database.</p>
+          </div>
+          <button id="closeCreateCtvModal" class="icon-button" type="button" aria-label="Đóng">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </div>
+
+        <div class="modal-grid">
+          <label>
+            <span>Họ tên</span>
+            <input name="fullName" type="text" placeholder="VD: Nguyễn Văn Cường" required />
+          </label>
+          <label>
+            <span>Số điện thoại</span>
+            <input name="phone" type="tel" placeholder="VD: 090..." required />
+          </label>
+          <label>
+            <span>Email</span>
+            <input name="email" type="email" placeholder="email@example.com" />
+          </label>
+        </div>
+
+        <p id="createCtvMessage" class="form-message" aria-live="polite"></p>
+
+        <div class="modal-actions">
+          <button id="cancelCreateCtv" class="ghost-button" type="button">Hủy</button>
+          <button class="primary-button" type="submit">
+            <i data-lucide="save" aria-hidden="true"></i>
+            <span>Lưu CTV</span>
           </button>
         </div>
       </form>
@@ -433,6 +412,18 @@
         <div class="delete-dialog-actions">
           <button id="cancelDeleteCandidate" class="dark-action" type="button">Hủy</button>
           <button id="confirmDeleteCandidate" class="red-action" type="button">Xóa UV</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="deleteCtvDialog" class="delete-dialog">
+      <div class="delete-dialog-card">
+        <h2>Xóa CTV</h2>
+        <p id="deleteCtvText">Xác nhận xóa CTV?</p>
+        <p id="deleteCtvStatus" class="delete-status" aria-live="polite"></p>
+        <div class="delete-dialog-actions">
+          <button id="cancelDeleteCtv" class="dark-action" type="button">Hủy</button>
+          <button id="confirmDeleteCtv" class="red-action" type="button">Xóa CTV</button>
         </div>
       </div>
     </dialog>

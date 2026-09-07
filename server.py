@@ -19,7 +19,7 @@ load_dotenv(BASE_DIR / ".env")
 
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "recruitment_dashboard").strip()
-SERVER_HOST = (os.getenv("SERVER_HOST") or ("0.0.0.0" if os.getenv("PORT") else "localhost")).strip()
+SERVER_HOST = "0.0.0.0" if os.getenv("PORT") else os.getenv("SERVER_HOST", "localhost").strip()
 SERVER_PORT = int(os.getenv("PORT") or os.getenv("SERVER_PORT", "5173"))
 CACHE_TTL_SECONDS = 20
 response_cache = {}
@@ -103,12 +103,10 @@ def industry_key(value):
     return re.sub(r"\s+", " ", "".join(char for char in normalized if unicodedata.category(char) != "Mn")).strip()
 
 def normalize_phone_key(value):
-    digits = re.sub(r"\D+", "", str(value or ""))
-    if digits.startswith("0084"):
-        digits = "0" + digits[4:]
-    elif digits.startswith("84") and len(digits) >= 10:
-        digits = "0" + digits[2:]
-    return digits
+    return str(value or "").strip()
+
+def has_valid_phone_characters(value):
+    return bool(re.fullmatch(r"\d+", str(value or "").strip()))
 
 def is_valid_vietnam_mobile(value):
     return bool(re.fullmatch(r"0(?:3|5|7|8|9)\d{8}", value or ""))
@@ -262,24 +260,21 @@ def normalize_candidate_payload(data):
     if not full_name:
         raise ValueError("Vui lòng nhập họ tên ứng viên.")
     phone = data.get("phone", "").strip()
-    if not phone:
-        raise ValueError("Vui lòng nhập SĐT ứng viên.")
-    phone_key = normalize_phone_key(phone)
-    if not phone_key:
+    if phone and not has_valid_phone_characters(phone):
+        raise ValueError("SĐT ứng viên chỉ được nhập số.")
+    phone_key = normalize_phone_key(phone) if phone else ""
+    if phone and not phone_key:
         raise ValueError("SĐT ứng viên không hợp lệ.")
-    if not is_valid_vietnam_mobile(phone_key):
+    if phone and not is_valid_vietnam_mobile(phone_key):
         raise ValueError("SĐT ứng viên không đúng định dạng. Vui lòng nhập số di động Việt Nam 10 số.")
     zalo_link = (data.get("zaloLink") or data.get("zaloUrl") or data.get("zalo") or "").strip()
     email = data.get("email", "").strip()
     email_key = normalize_email_key(email)
-    if not email_key:
-        raise ValueError("Vui lòng nhập email ứng viên.")
-    if not is_valid_email(email_key):
+    if email_key and not is_valid_email(email_key):
         raise ValueError("Email ứng viên không đúng định dạng.")
     payload = {
         "fullName": full_name,
         "phone": phone,
-        "phoneKey": phone_key,
         "email": email,
         "birthYear": data.get("birthYear") or data.get("birth_year") or "",
         "gender": data.get("gender", ""),
@@ -292,6 +287,8 @@ def normalize_candidate_payload(data):
         "note": data.get("note", ""),
         "updatedAt": utc_now(),
     }
+    if phone_key:
+        payload["phoneKey"] = phone_key
     zalo_key = normalize_zalo_key(zalo_link)
     if zalo_key:
         payload["zaloKey"] = zalo_key
@@ -305,14 +302,30 @@ def normalize_ctv_payload(data):
     full_name = full_name.strip()
     if not full_name:
         raise ValueError("Vui lòng nhập họ tên CTV.")
+    phone = data.get("phone", "").strip()
+    if not phone:
+        raise ValueError("Vui lòng nhập SĐT CTV.")
+    if not has_valid_phone_characters(phone):
+        raise ValueError("SĐT CTV chỉ được nhập số.")
+    phone_key = normalize_phone_key(phone)
+    if not phone_key:
+        raise ValueError("SĐT CTV không hợp lệ.")
+    if not is_valid_vietnam_mobile(phone_key):
+        raise ValueError("SĐT CTV không đúng định dạng. Vui lòng nhập số di động Việt Nam 10 số.")
+    email = data.get("email", "").strip()
+    email_key = normalize_email_key(email)
+    if email_key and not is_valid_email(email_key):
+        raise ValueError("Email CTV không đúng định dạng.")
     initials = data.get("initials", "").strip()
     if not initials:
         initials = "".join(part[0] for part in full_name.split()[:3]).upper()
     return {
         "fullName": full_name,
         "initials": initials,
-        "phone": data.get("phone", "").strip(),
-        "email": data.get("email", "").strip(),
+        "phone": phone,
+        "phoneKey": phone_key,
+        "email": email,
+        "zaloLink": (data.get("zaloLink") or data.get("zaloUrl") or data.get("zalo") or "").strip(),
         "status": data.get("status", "Đang hoạt động"),
         "note": data.get("note", ""),
         "updatedAt": utc_now(),
@@ -405,18 +418,25 @@ class MongoStore:
         self.db.orders.create_index([("industry", ASCENDING)])
         self.db.orders.create_index([("createdAt", DESCENDING)])
         self.backfill_candidate_unique_keys()
-        self.db.candidates.create_index([("phone", ASCENDING)], unique=True, sparse=True)
+        self.drop_unique_index_if_present("candidates", "phone_1")
         self.create_unique_index_if_clean("candidates", "phoneKey")
         self.create_unique_index_if_clean("candidates", "zaloKey")
         self.create_unique_index_if_clean("candidates", "emailKey")
         self.db.candidates.create_index([("fullName", "text"), ("phone", "text"), ("email", "text")])
+        self.backfill_ctv_unique_keys()
         self.db.ctvs.create_index([("phone", ASCENDING)], unique=True, sparse=True)
+        self.create_unique_index_if_clean("ctvs", "phoneKey")
         self.db.ctvs.create_index([("fullName", "text"), ("phone", "text")])
         self.db.applications.create_index([("orderId", ASCENDING)])
         self.db.applications.create_index([("candidateId", ASCENDING)])
         self.db.applications.create_index([("ctvId", ASCENDING)])
         self.db.applications.create_index([("orderId", ASCENDING), ("stage", ASCENDING)])
         self.db.applications.create_index([("orderId", ASCENDING), ("candidateId", ASCENDING)], unique=True)
+
+    def drop_unique_index_if_present(self, collection_name, index_name):
+        index_info = self.db[collection_name].index_information().get(index_name)
+        if index_info and index_info.get("unique"):
+            self.db[collection_name].drop_index(index_name)
 
     def create_unique_index_if_clean(self, collection_name, field):
         duplicate = next(self.db[collection_name].aggregate([
@@ -454,6 +474,12 @@ class MongoStore:
             if update:
                 self.db.candidates.update_one({"_id": candidate["_id"]}, update)
 
+    def backfill_ctv_unique_keys(self):
+        for ctv in self.db.ctvs.find({}, {"phone": 1}):
+            phone_key = normalize_phone_key(ctv.get("phone", ""))
+            if phone_key:
+                self.db.ctvs.update_one({"_id": ctv["_id"]}, {"$set": {"phoneKey": phone_key}})
+
     def assert_candidate_unique(self, payload, candidate_id=None):
         exclude_id = mongo_id(candidate_id) if candidate_id else None
         checks = []
@@ -468,6 +494,20 @@ class MongoStore:
             if exclude_id:
                 query["_id"] = {"$ne": exclude_id}
             if self.db.candidates.find_one(query, {"_id": 1}):
+                raise ValueError(message)
+
+    def assert_ctv_unique(self, payload, ctv_id=None):
+        exclude_id = mongo_id(ctv_id) if ctv_id else None
+        checks = []
+        if payload.get("phoneKey"):
+            checks.append(("phoneKey", payload["phoneKey"], "CTV đã tồn tại."))
+        if payload.get("email"):
+            checks.append(("email", payload["email"], "CTV đã tồn tại."))
+        for field, value, message in checks:
+            query = {field: value}
+            if exclude_id:
+                query["_id"] = {"$ne": exclude_id}
+            if self.db.ctvs.find_one(query, {"_id": 1}):
                 raise ValueError(message)
 
     def order_to_api(self, order, include_heavy=True):
@@ -485,6 +525,7 @@ class MongoStore:
             "status": order.get("status", ""),
             "badge": badge_for_status(order.get("status", "")),
             "createdAt": iso_datetime(order.get("createdAt")),
+            "updatedAt": iso_datetime(order.get("updatedAt")),
             "postingStatus": order.get("postingStatus", "Chưa đăng"),
             "postingGroup": order.get("postingGroup", ""),
             "postingLink": order.get("postingLink", ""),
@@ -682,6 +723,8 @@ class MongoStore:
         self.assert_candidate_unique(payload, candidate_id)
         update = {"$set": payload}
         unset_fields = {}
+        if not payload.get("phoneKey"):
+            unset_fields["phoneKey"] = ""
         if not payload.get("zaloKey"):
             unset_fields["zaloKey"] = ""
         if not payload.get("emailKey"):
@@ -708,6 +751,7 @@ class MongoStore:
                 "initials": item.get("initials", ""),
                 "phone": item.get("phone", ""),
                 "email": item.get("email", ""),
+                "zaloLink": item.get("zaloLink") or item.get("zaloUrl") or item.get("zalo") or "",
                 "recruitedCount": collaborator_stats.get(item.get("_id"), {}).get("passed", 0),
                 "status": item.get("status", ""),
                 "note": item.get("note", ""),
@@ -719,12 +763,15 @@ class MongoStore:
 
     def create_ctv(self, data):
         payload = normalize_ctv_payload(data)
+        self.assert_ctv_unique(payload)
         payload["createdAt"] = utc_now()
         result = self.db.ctvs.insert_one(payload)
         return {"ok": True, "id": doc_id(result.inserted_id)}
 
     def update_ctv(self, ctv_id, data):
-        result = self.db.ctvs.update_one({"_id": mongo_id(ctv_id)}, {"$set": normalize_ctv_payload(data)})
+        payload = normalize_ctv_payload(data)
+        self.assert_ctv_unique(payload, ctv_id)
+        result = self.db.ctvs.update_one({"_id": mongo_id(ctv_id)}, {"$set": payload})
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy CTV.")
         return {"ok": True}
@@ -828,12 +875,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/dashboard":
             cached = get_cached_response("dashboard", parsed.query)
-            self.send_json(cached or set_cached_response("dashboard", store.get_dashboard_data(query), parsed.query))
+            self.send_json(cached or set_cached_response("dashboard", store.get_dashboard_data(query, False), parsed.query))
             return
         if parsed.path == "/api/order-detail":
             code = query.get("code", [""])[0]
+            cached = get_cached_response("order-detail", parsed.query)
+            if cached:
+                self.send_json(cached)
+                return
             try:
-                self.send_json(store.get_order(code))
+                self.send_json(set_cached_response("order-detail", store.get_order(code), parsed.query))
             except ValueError as error:
                 self.send_json({"ok": False, "message": str(error)}, 404)
             return
