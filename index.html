@@ -7,9 +7,9 @@
     <script>
       document.documentElement.dataset.activeSection = localStorage.getItem("activeDashboardSection") || "orders";
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20260908-industry-fix" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-delete-candidate-cv" />
     <script defer src="https://unpkg.com/lucide@latest"></script>
-    <script defer src="./script.js?v=20260908-industry-fix"></script>
+    <script defer src="./script.js?v=20260908-orders-pagination"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -56,14 +56,6 @@
             </button>
           </div>
         </header>
-
-        <section class="page-heading">
-          <div>
-            <p class="eyebrow">Trung tâm điều phối tuyển dụng</p>
-            <h1 id="pageTitle">Dashboard tuyển dụng</h1>
-            <p class="muted">Theo dõi nhu cầu tuyển, pipeline ứng viên và hiệu quả cộng tác viên trong một màn hình.</p>
-          </div>
-        </section>
 
         <section class="metrics-grid" aria-label="Chỉ số tổng quan">
           <article class="metric-card">
@@ -165,6 +157,7 @@
                     </div>
                   </div>
                 </div>
+                <div id="orderPagination" class="order-pagination" data-orders-only></div>
               </article>
             </section>
           </article>
@@ -356,7 +349,13 @@
             <input id="candidateCvFile" class="visually-hidden-file" type="file" accept="application/pdf,.pdf,image/*" />
             <input id="candidateCvDataUrl" name="cvDataUrl" type="hidden" />
             <input id="candidateCvFileName" name="cvFileName" type="hidden" />
-            <span id="candidateCvStatus" class="field-hint" aria-live="polite"></span>
+            <div class="cv-upload-meta">
+              <span id="candidateCvStatus" class="field-hint" aria-live="polite"></span>
+              <button id="deleteCandidateCvButton" class="cv-delete-button" type="button" hidden>
+                <i data-lucide="trash-2" aria-hidden="true"></i>
+                <span>Xóa CV</span>
+              </button>
+            </div>
           </label>
         </div>
 
@@ -469,6 +468,19 @@
           </div>
         </div>
         <div class="interview-schedule-body">
+          <div class="interview-status-field">
+            <span>Trạng thái UV</span>
+            <strong id="interviewCandidateStage" class="candidate-status interview">Chờ PV</strong>
+            <select id="interviewCandidateStageInput" hidden>
+              <option value="Chờ PV">Chờ PV</option>
+              <option value="Đậu PV">Đậu PV</option>
+              <option value="Trượt PV">Trượt PV</option>
+              <option value="Chờ về Cty">Chờ về Cty</option>
+              <option value="Hoàn thành">Hoàn thành</option>
+              <option value="Đã nhận tiền">Đã nhận tiền</option>
+              <option value="Bỏ đơn">Bỏ đơn</option>
+            </select>
+          </div>
           <div>
             <span>Ngày PV</span>
             <strong id="interviewScheduleDate">Chưa có lịch PV</strong>
@@ -498,7 +510,21 @@
     <dialog id="candidateCvDialog" class="cv-viewer-dialog">
       <div class="cv-viewer-card">
         <div class="cv-viewer-head">
-          <strong id="candidateCvTitle">CV ứng viên</strong>
+          <div class="cv-viewer-title-group">
+            <span class="cv-viewer-kicker">HỒ SƠ ỨNG VIÊN</span>
+            <strong id="candidateCvTitle">CV ứng viên</strong>
+            <span id="candidateCvMeta" class="cv-viewer-meta">Đang chuẩn bị bản xem trước</span>
+          </div>
+          <div class="cv-viewer-actions">
+            <a id="openCandidateCvNewTab" class="cv-viewer-action" href="#" target="_blank" rel="noopener">
+              <i data-lucide="external-link" aria-hidden="true"></i>
+              <span>Mở tab mới</span>
+            </a>
+            <a id="downloadCandidateCv" class="cv-viewer-action cv-viewer-download" href="#" download>
+              <i data-lucide="download" aria-hidden="true"></i>
+              <span>Tải xuống</span>
+            </a>
+          </div>
           <button id="closeCandidateCv" class="lightbox-close-button inline-close-button" type="button" aria-label="Đóng">×</button>
         </div>
         <div id="candidateCvViewer" class="cv-viewer-body"></div>

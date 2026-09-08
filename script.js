@@ -23,6 +23,7 @@ let pendingDeleteCode = "";
 let pendingDeleteCandidateId = "";
 let pendingDeleteCtvId = "";
 let currentOrders = [];
+let candidateOrderOptions = [];
 let activeSection = localStorage.getItem("activeDashboardSection") || "orders";
 let currentCandidates = [];
 let currentCtvs = [];
@@ -33,9 +34,13 @@ let candidatesLoaded = false;
 let ctvsLoaded = false;
 let activeInterviewApplicationId = "";
 let activeCvObjectUrl = "";
-const API_CACHE_TTL = 20000;
+const API_CACHE_TTL = 60 * 60 * 1000;
+const ORDERS_PER_PAGE = 5;
 const ORDER_DETAIL_CACHE_PREFIX = "orderDetail:";
 const apiCache = new Map();
+let orderSearchRenderTimer = 0;
+let currentOrderPage = 1;
+let orderPagination = { page: 1, pageSize: ORDERS_PER_PAGE, total: 0, totalPages: 1 };
 
 function getCachedApi(key) {
   const item = apiCache.get(key);
@@ -60,6 +65,7 @@ function loadCachedApi(key, loader) {
 
 function clearFrontendCache() {
   apiCache.clear();
+  candidateOrderOptions = [];
   candidatesLoaded = false;
   ctvsLoaded = false;
 }
@@ -172,6 +178,38 @@ function isValidVietnamMobile(value) {
   return hasValidPhoneCharacters(value) && /^0(?:3|5|7|8|9)\d{8}$/.test(normalizePhoneKey(value));
 }
 
+function isValidJapanMobile(value) {
+  const phone = normalizePhoneKey(value);
+  return hasValidPhoneCharacters(phone) && /^(?:0[789]0\d{8}|81[789]0\d{8})$/.test(phone);
+}
+
+function isValidSupportedMobile(value) {
+  return isValidVietnamMobile(value) || isValidJapanMobile(value);
+}
+
+function getPhoneCountry(value) {
+  if (isValidJapanMobile(value)) return { code: "jp", label: "Nhật Bản" };
+  if (isValidVietnamMobile(value)) return { code: "vn", label: "Việt Nam" };
+  return null;
+}
+
+function renderPhoneWithFlag(value) {
+  const phone = String(value || "").trim();
+  const country = getPhoneCountry(phone);
+  if (!phone) return `<span class="muted-value">Chưa có</span>`;
+  return `
+    <span class="phone-with-flag">
+      <span>${escapeHtml(phone)}</span>
+      ${country ? `<span class="phone-flag flag-${country.code}" title="Số điện thoại ${country.label}" aria-label="Số điện thoại ${country.label}" role="img"></span>` : ""}
+    </span>
+  `;
+}
+
+function getVietnamZaloLinkFromPhone(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return isValidVietnamMobile(digits) ? `https://zalo.me/${digits}` : "";
+}
+
 function isValidEmail(value) {
   const email = String(value || "").trim();
   if (email.split("@").length !== 2 || /\s/.test(email) || !email.toLowerCase().endsWith(".com") || email.includes("..")) {
@@ -239,10 +277,12 @@ function buildOrderEditSnapshot(payload) {
   };
 }
 
-async function loadDashboard() {
+async function loadDashboard(page = currentOrderPage) {
   const status = "all";
-  const search = "";
-  const params = new URLSearchParams({ status, search });
+  const search = document.getElementById("orderSearch")?.value.trim() || "";
+  const sortBy = document.getElementById("orderSortBy")?.value || "createdAt";
+  const sortDirection = document.getElementById("orderSortDirection")?.value || "desc";
+  const params = new URLSearchParams({ status, search, page, pageSize: ORDERS_PER_PAGE, sortBy, sortDirection });
   return loadCachedApi(`dashboard:${params.toString()}`, async () => {
     const response = await fetch(`/api/dashboard?${params.toString()}`);
 
@@ -260,6 +300,15 @@ async function loadMetrics() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || "Không thể tải chỉ số dashboard");
     return data.metrics;
+  });
+}
+
+async function loadCandidateOrderOptions() {
+  return loadCachedApi("order-options", async () => {
+    const response = await fetch("/api/order-options");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || "Không thể tải danh sách đơn");
+    return data.orders || [];
   });
 }
 
@@ -978,6 +1027,36 @@ function getVisibleOrders(orders) {
     });
 }
 
+function getOrderPageCount(total) {
+  return Math.max(1, Math.ceil(total / ORDERS_PER_PAGE));
+}
+
+function renderOrderPagination(paginationData) {
+  const pagination = document.getElementById("orderPagination");
+  if (!pagination) return;
+
+  const { total: totalOrders, page: pageNumber, totalPages: pageCount } = paginationData;
+  currentOrderPage = pageNumber;
+
+  if (totalOrders <= ORDERS_PER_PAGE) {
+    pagination.innerHTML = totalOrders
+      ? `<span>Hiển thị ${totalOrders}/${totalOrders} đơn</span>`
+      : "";
+    return;
+  }
+
+  const start = (currentOrderPage - 1) * ORDERS_PER_PAGE + 1;
+  const end = Math.min(totalOrders, currentOrderPage * ORDERS_PER_PAGE);
+  pagination.innerHTML = `
+    <span>Hiển thị ${start}-${end}/${totalOrders} đơn</span>
+    <div class="pagination-actions">
+      <button class="ghost-button" type="button" data-order-page="prev" ${currentOrderPage === 1 ? "disabled" : ""}>Trước</button>
+      <strong>${currentOrderPage}/${pageCount}</strong>
+      <button class="ghost-button" type="button" data-order-page="next" ${currentOrderPage === pageCount ? "disabled" : ""}>Sau</button>
+    </div>
+  `;
+}
+
 function updateOrderSearchOptions(orders) {
   const datalist = document.getElementById("orderSearchOptions");
   if (!datalist) return;
@@ -1070,7 +1149,7 @@ function populateCandidateOrderOptions() {
   const datalist = document.getElementById("candidateOrderOptions");
   if (!datalist) return;
 
-  datalist.innerHTML = currentOrders
+  datalist.innerHTML = candidateOrderOptions
     .map((order) => {
       const label = getOrderSearchLabel(order);
       return `<option value="${escapeHtml(label)}" data-code="${escapeHtml(order.code)}">${escapeHtml(getOrderIndustryLabel(order))}</option>`;
@@ -1080,7 +1159,7 @@ function populateCandidateOrderOptions() {
 
 function findOrderFromCandidateInput() {
   const value = document.getElementById("candidateOrderSearch")?.value.trim() || "";
-  return currentOrders.find((order) => value === getOrderSearchLabel(order) || value === order.code) || null;
+  return candidateOrderOptions.find((order) => value === getOrderSearchLabel(order) || value === order.code) || null;
 }
 
 function syncCandidateOrderFields() {
@@ -1120,9 +1199,8 @@ function syncCandidateCtvFields() {
 }
 
 async function prepareCandidateModalOptions() {
-  if (!currentOrders.length) {
-    const data = await loadDashboard();
-    currentOrders = data.orders || [];
+  if (!candidateOrderOptions.length) {
+    candidateOrderOptions = await loadCandidateOrderOptions();
   }
   if (!ctvsLoaded) {
     currentCtvs = await loadCtvs();
@@ -1148,23 +1226,83 @@ function buildCandidateEditSnapshot(payload, selectedOrder, selectedCtv) {
   });
 }
 
+function applyCandidateUpdateToState(candidateId, applicationId, payload, selectedOrder, selectedCtv) {
+  const now = new Date().toISOString();
+  const existingCandidate = currentCandidates.find((candidate) => candidate.id === candidateId) || {};
+  const keepExistingCv = payload.cvDataUrl === "__KEEP_EXISTING_CV__";
+  const deleteCv = payload.cvDataUrl === "__DELETE_CV__";
+  const nextCandidate = {
+    ...existingCandidate,
+    id: candidateId,
+    fullName: payload.fullName || existingCandidate.fullName || "",
+    phone: payload.phone || "",
+    email: payload.email || "",
+    groupLink: payload.groupLink || "",
+    role: payload.role || existingCandidate.role || "Ứng viên",
+    stage: payload.stage || existingCandidate.stage || "Chờ PV",
+    status: payload.status || existingCandidate.status || "",
+    note: payload.note || existingCandidate.note || "",
+    updatedAt: now,
+  };
+
+  if (deleteCv) {
+    nextCandidate.cvDataUrl = "";
+    nextCandidate.cvFileName = "";
+    nextCandidate.cvLink = "";
+    nextCandidate.hasCv = false;
+  } else if (!keepExistingCv) {
+    nextCandidate.cvFileName = payload.cvFileName || "";
+    nextCandidate.cvLink = payload.cvLink || "";
+    nextCandidate.hasCv = Boolean(payload.cvDataUrl || payload.cvLink);
+  }
+
+  currentCandidates = currentCandidates.some((candidate) => candidate.id === candidateId)
+    ? currentCandidates.map((candidate) => (candidate.id === candidateId ? nextCandidate : candidate))
+    : [nextCandidate, ...currentCandidates];
+
+  if (!selectedOrder?.id || !applicationId) return;
+
+  const existingApplication = currentApplications.find((application) => application.id === applicationId) || {};
+  const nextApplication = {
+    ...existingApplication,
+    id: applicationId,
+    orderId: selectedOrder.id,
+    orderCode: selectedOrder.code || existingApplication.orderCode || "",
+    orderTitle: selectedOrder.title || existingApplication.orderTitle || "",
+    candidateId,
+    candidateName: nextCandidate.fullName,
+    ctvId: selectedCtv?.id || "",
+    ctvName: selectedCtv?.fullName || selectedCtv?.name || "",
+    ctvZaloLink: selectedCtv ? getCtvZaloLink(selectedCtv) : "",
+    stage: payload.stage || "Chờ PV",
+    sourceType: "CTV",
+    sourceNote: selectedCtv ? (selectedCtv.fullName || selectedCtv.name || "") : payload.source || "",
+    groupLink: payload.groupLink || "",
+    role: getOrderIndustryLabel(selectedOrder),
+    note: payload.note || "",
+    updatedAt: now,
+  };
+
+  currentApplications = currentApplications.some((application) => application.id === applicationId)
+    ? currentApplications.map((application) => (application.id === applicationId ? nextApplication : application))
+    : [nextApplication, ...currentApplications];
+}
+
 function getCtvRecruitedCount(ctv) {
   return Number(ctv.recruitedCount ?? ctv.hiredCount ?? ctv.passCount ?? ctv.totalHired ?? ctv.candidateCount ?? 0) || 0;
 }
 
 function getCtvZaloLink(ctv) {
   if (ctv.zaloLink || ctv.zalo) return ctv.zaloLink || ctv.zalo;
-  const digits = String(ctv.phone || "").replace(/\D/g, "");
-  return digits ? `https://zalo.me/${digits}` : "";
+  return getVietnamZaloLinkFromPhone(ctv.phone);
 }
 
 function renderOrders(orders) {
   const list = document.getElementById("orderList") || document.getElementById("ordersList");
-  const visibleOrders = getVisibleOrders(orders);
-
   updateOrderSearchOptions(orders);
+  renderOrderPagination(orderPagination);
 
-  if (visibleOrders.length === 0) {
+  if (orders.length === 0) {
     list.innerHTML = `
       <article class="order-card order-card-empty">
         <div class="empty-state">
@@ -1176,7 +1314,7 @@ function renderOrders(orders) {
     return;
   }
 
-  list.innerHTML = visibleOrders
+  list.innerHTML = orders
     .map(
       (order) => {
         const shortTitle = getOrderShortTitle(order);
@@ -1222,104 +1360,103 @@ function renderOrders(orders) {
     )
     .join("");
 
-  list.querySelectorAll("[data-order-code]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const order = currentOrders.find((item) => item.code === button.dataset.orderCode);
-      if (!order) return;
-      button.disabled = true;
-      try {
-        openOrderDetail(await ensureOrderDetail(order));
-      } catch (error) {
-        console.error(error);
-      } finally {
-        button.disabled = false;
-      }
-    });
-  });
-  list.querySelectorAll("[data-reopen-code]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const order = currentOrders.find((item) => item.code === button.dataset.reopenCode);
-      if (!order) return;
+  if (window.lucide) window.lucide.createIcons();
+}
+
+async function handleOrderListClick(event) {
+  const button = event.target.closest("[data-order-code], [data-reopen-code], [data-copy-order-code], [data-order-image-code], [data-delete-code]");
+  if (!button) return;
+
+  const code = button.dataset.orderCode
+    || button.dataset.reopenCode
+    || button.dataset.copyOrderCode
+    || button.dataset.orderImageCode
+    || button.dataset.deleteCode;
+  const order = currentOrders.find((item) => item.code === code);
+
+  if (button.dataset.deleteCode !== undefined) {
+    openDeleteDialog(order || { code, title: "" });
+    return;
+  }
+
+  if (!order || button.disabled) return;
+  const originalLabel = button.textContent;
+  button.disabled = true;
+
+  try {
+    if (button.dataset.orderCode !== undefined) {
+      openOrderDetail(await ensureOrderDetail(order));
+      return;
+    }
+
+    if (button.dataset.reopenCode !== undefined) {
       const persisted = getPersistedOrderDetail(order.code, order.updatedAt);
       if (persisted) {
         reopenOrder({ ...order, ...persisted });
         return;
       }
       reopenOrder(order, { loadingDetail: true });
-      button.disabled = true;
-      try {
-        const detail = await ensureOrderDetail(order);
-        const dialog = document.getElementById("createOrderDialog");
-        if (dialog.open && editingOrderCode === detail.code) {
-          reopenOrder(detail);
-        }
-      } catch (error) {
-        console.error(error);
-        document.getElementById("createOrderMessage").textContent = error.message || "Không thể tải dữ liệu đã lưu.";
-        document.getElementById("createOrderMessage").className = "form-message error";
-        document.getElementById("createOrderForm").querySelector('button[type="submit"]').disabled = false;
-      } finally {
-        button.disabled = false;
+      const detail = await ensureOrderDetail(order);
+      const dialog = document.getElementById("createOrderDialog");
+      if (dialog.open && editingOrderCode === detail.code) {
+        reopenOrder(detail);
       }
-    });
-  });
-  list.querySelectorAll("[data-copy-order-code]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const order = currentOrders.find((item) => item.code === button.dataset.copyOrderCode);
-      if (!order) return;
-      button.disabled = true;
-      const originalLabel = button.textContent;
-      try {
-        const detail = await ensureOrderDetail(order);
-        const fallbackText = makeShortText(buildJobDataFromOrder(detail));
-        const text = (detail.textUpFb || fallbackText || "").trim();
-        if (!text) throw new Error("Đơn này chưa có text up Facebook.");
-        await navigator.clipboard.writeText(text);
-        button.textContent = "Đã copy";
-        button.classList.add("copied");
-        setTimeout(() => {
-          button.textContent = originalLabel;
-          button.classList.remove("copied");
-        }, 1200);
-      } catch (error) {
-        console.error(error);
-        button.textContent = "Lỗi copy";
-        setTimeout(() => {
-          button.textContent = originalLabel;
-        }, 1200);
-      } finally {
-        button.disabled = false;
-      }
-    });
-  });
-  list.querySelectorAll("[data-order-image-code]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const order = currentOrders.find((item) => item.code === button.dataset.orderImageCode);
-      if (!order) return;
-      button.disabled = true;
-      const originalLabel = button.textContent;
-      try {
-        const detail = await ensureOrderDetail(order);
-        if (!detail.imageDataUrl) throw new Error("Đơn này chưa có dữ liệu ảnh để xem.");
-        openImageLightbox(detail.imageDataUrl);
-      } catch (error) {
-        console.error(error);
-        button.textContent = "Không mở được";
-        setTimeout(() => {
-          button.textContent = originalLabel;
-        }, 1200);
-      } finally {
-        button.disabled = false;
-      }
-    });
-  });
-  list.querySelectorAll("[data-delete-code]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const order = currentOrders.find((item) => item.code === button.dataset.deleteCode);
-      openDeleteDialog(order || { code: button.dataset.deleteCode, title: "" });
-    });
-  });
-  if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+
+    if (button.dataset.copyOrderCode !== undefined) {
+      const detail = await ensureOrderDetail(order);
+      const fallbackText = makeShortText(buildJobDataFromOrder(detail));
+      const text = (detail.textUpFb || fallbackText || "").trim();
+      if (!text) throw new Error("Đơn này chưa có text up Facebook.");
+      await navigator.clipboard.writeText(text);
+      button.textContent = "Đã copy";
+      button.classList.add("copied");
+      setTimeout(() => {
+        button.textContent = originalLabel;
+        button.classList.remove("copied");
+      }, 1200);
+      return;
+    }
+
+    if (button.dataset.orderImageCode !== undefined) {
+      const detail = await ensureOrderDetail(order);
+      if (!detail.imageDataUrl) throw new Error("Đơn này chưa có dữ liệu ảnh để xem.");
+      openImageLightbox(detail.imageDataUrl);
+    }
+  } catch (error) {
+    console.error(error);
+    if (button.dataset.reopenCode !== undefined) {
+      document.getElementById("createOrderMessage").textContent = error.message || "Không thể tải dữ liệu đã lưu.";
+      document.getElementById("createOrderMessage").className = "form-message error";
+      document.getElementById("createOrderForm").querySelector('button[type="submit"]').disabled = false;
+    } else if (button.dataset.copyOrderCode !== undefined) {
+      button.textContent = "Lỗi copy";
+      setTimeout(() => {
+        button.textContent = originalLabel;
+      }, 1200);
+    } else if (button.dataset.orderImageCode !== undefined) {
+      button.textContent = "Không mở được";
+      setTimeout(() => {
+        button.textContent = originalLabel;
+      }, 1200);
+    }
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function handleOrderPaginationClick(event) {
+  const button = event.target.closest("[data-order-page]");
+  if (!button || button.disabled) return;
+
+  if (button.dataset.orderPage === "prev") {
+    currentOrderPage = Math.max(1, currentOrderPage - 1);
+  } else if (button.dataset.orderPage === "next") {
+    currentOrderPage = Math.min(orderPagination.totalPages, currentOrderPage + 1);
+  }
+
+  refreshDashboard();
 }
 
 function getCandidateApplication(candidate) {
@@ -1338,7 +1475,7 @@ function getCandidateOrderCode(candidate, application) {
 function getCandidateOrder(candidate, application) {
   const orderCode = getCandidateOrderCode(candidate, application);
   if (!orderCode) return null;
-  return currentOrders.find((order) => order.code === orderCode) || null;
+  return candidateOrderOptions.find((order) => order.code === orderCode) || null;
 }
 
 function renderCandidateOrderButton(candidate, application) {
@@ -1350,7 +1487,7 @@ function renderCandidateOrderButton(candidate, application) {
 }
 
 function getCandidateIndustry(candidate, application) {
-  const order = currentOrders.find((item) => item.code === application?.orderCode);
+  const order = candidateOrderOptions.find((item) => item.code === application?.orderCode);
   return order?.department || candidate.industry || application?.role || candidate.role || "Chưa có";
 }
 
@@ -1364,13 +1501,21 @@ function renderCandidateIndustryTags(candidate, application) {
 
 function getCandidateStatus(candidate, application) {
   const value = normalizeSearchText(application?.stage || application?.status || candidate.stage || candidate.status || "");
-  if (/hoan thanh|nhan viec|offer|dat|pass|ve cty xong/.test(value)) return "Hoàn thành";
-  if (/cho ve cty|ve cty|dang ve|len cty/.test(value)) return "Chờ về cty";
+  if (/da nhan tien/.test(value)) return "Đã nhận tiền";
+  if (/bo don/.test(value)) return "Bỏ đơn";
+  if (/truot pv|rot pv|khong dat/.test(value)) return "Trượt PV";
+  if (/dau pv|dat pv|pass pv/.test(value)) return "Đậu PV";
+  if (/hoan thanh|nhan viec|offer|ve cty xong/.test(value)) return "Hoàn thành";
+  if (/cho ve cty|ve cty|dang ve|len cty/.test(value)) return "Chờ về Cty";
   return "Chờ PV";
 }
 
 function getCandidateStatusClass(status) {
   const value = normalizeSearchText(status);
+  if (/da nhan tien/.test(value)) return "paid";
+  if (/bo don/.test(value)) return "cancelled";
+  if (/truot pv|rot pv/.test(value)) return "failed";
+  if (/dau pv|dat pv|pass pv/.test(value)) return "passed";
   if (/hoan thanh/.test(value)) return "done";
   if (/cho ve cty/.test(value)) return "returning";
   return "interview";
@@ -1379,9 +1524,7 @@ function getCandidateStatusClass(status) {
 function renderCandidateStatusControl(candidate, application) {
   const status = getCandidateStatus(candidate, application);
   const appId = application?.id || "";
-  const scheduleButton = status === "Chờ PV"
-    ? `<button class="interview-mini-button" type="button" data-interview-application-id="${escapeHtml(appId)}" data-interview-candidate-id="${escapeHtml(candidate.id || "")}" aria-label="Xem lịch PV"><i data-lucide="calendar-days" aria-hidden="true"></i></button>`
-    : "";
+  const scheduleButton = `<button class="interview-mini-button" type="button" data-interview-application-id="${escapeHtml(appId)}" data-interview-candidate-id="${escapeHtml(candidate.id || "")}" aria-label="Xem lịch PV và chỉnh trạng thái"><i data-lucide="calendar-days" aria-hidden="true"></i></button>`;
   return `<span class="candidate-status-wrap"><span class="candidate-status ${getCandidateStatusClass(status)}">${escapeHtml(status)}</span>${scheduleButton}</span>`;
 }
 
@@ -1448,9 +1591,15 @@ function getCandidateGroupLink(candidate, application) {
 
 function getCandidateCvLink(candidate, application) {
   const value = application?.cvDataUrl || application?.cvLink || application?.resumeLink || application?.profileLink || application?.fileUrl || getCandidateLink(candidate, ["cvDataUrl", "cvLink", "cvUrl", "resumeLink", "resumeUrl", "profileLink", "profileUrl", "fileUrl"]);
-  if (candidate?.hasCv && candidate?.id) return `/api/candidates/${encodeURIComponent(candidate.id)}/cv`;
+  if (candidate?.hasCv && candidate?.id) {
+    const version = encodeURIComponent(candidate.updatedAt || candidate.cvUpdatedAt || "1");
+    return `/api/candidates/${encodeURIComponent(candidate.id)}/cv?v=${version}`;
+  }
   if (!value) return "";
-  if (candidate?.cvDataUrl && candidate?.id) return `/api/candidates/${encodeURIComponent(candidate.id)}/cv`;
+  if (candidate?.cvDataUrl && candidate?.id) {
+    const version = encodeURIComponent(candidate.updatedAt || candidate.cvUpdatedAt || "1");
+    return `/api/candidates/${encodeURIComponent(candidate.id)}/cv?v=${version}`;
+  }
   if (/^(data:|blob:)/i.test(value)) return value;
   return /^https?:\/\//i.test(value) ? value : `https://${value}`;
 }
@@ -1499,6 +1648,9 @@ function closeCandidateCvDialog() {
   const viewer = document.getElementById("candidateCvViewer");
   if (dialog.open) dialog.close();
   viewer.innerHTML = "";
+  document.getElementById("candidateCvMeta").textContent = "Đang chuẩn bị bản xem trước";
+  document.getElementById("openCandidateCvNewTab").href = "#";
+  document.getElementById("downloadCandidateCv").href = "#";
   if (activeCvObjectUrl) {
     URL.revokeObjectURL(activeCvObjectUrl);
     activeCvObjectUrl = "";
@@ -1519,9 +1671,30 @@ function openCandidateCvViewer(candidate, application) {
   if (/^blob:/i.test(source)) activeCvObjectUrl = source;
   const isImage = /^data:image\//i.test(cvLink) || /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(fileName) || /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(cvLink);
   document.getElementById("candidateCvTitle").textContent = fileName || "CV ứng viên";
-  viewer.innerHTML = isImage
-    ? `<img src="${escapeHtml(source)}" alt="${escapeHtml(fileName || "CV ứng viên")}">`
-    : `<iframe src="${escapeHtml(source)}" title="${escapeHtml(fileName || "CV ứng viên")}"></iframe>`;
+  document.getElementById("candidateCvMeta").textContent = `${isImage ? "Ảnh CV" : "Tài liệu CV"} • ${candidate.fullName || "Ứng viên"}`;
+  document.getElementById("openCandidateCvNewTab").href = source;
+  const downloadLink = document.getElementById("downloadCandidateCv");
+  downloadLink.href = source;
+  downloadLink.download = fileName || "cv";
+  viewer.classList.add("is-loading");
+  viewer.dataset.type = isImage ? "image" : "document";
+  viewer.innerHTML = `
+    <div class="cv-viewer-loading" role="status"><span></span>Đang mở CV</div>
+    <div class="cv-viewer-toolbar" aria-hidden="true">
+      <span>${escapeHtml(isImage ? "Ảnh CV" : "PDF / tài liệu")}</span>
+      <strong>${escapeHtml(candidate.fullName || "Ứng viên")}</strong>
+    </div>
+    <div class="cv-viewer-canvas">
+      ${isImage
+        ? `<img src="${escapeHtml(source)}" alt="${escapeHtml(fileName || "CV ứng viên")}">`
+        : `<iframe src="${escapeHtml(source)}" title="${escapeHtml(fileName || "CV ứng viên")}"></iframe>`}
+    </div>`;
+  const documentElement = viewer.querySelector(isImage ? "img" : "iframe");
+  documentElement.addEventListener("load", () => viewer.classList.remove("is-loading"), { once: true });
+  documentElement.addEventListener("error", () => {
+    viewer.classList.remove("is-loading");
+    viewer.innerHTML = `<div class="cv-viewer-error"><strong>Không thể hiển thị bản xem trước</strong><span>Hãy thử mở CV ở tab mới hoặc tải file về máy.</span></div>`;
+  }, { once: true });
   document.getElementById("candidateCvDialog").showModal();
 }
 
@@ -1536,8 +1709,7 @@ function getCandidateZaloLink(candidate) {
   if (directLink) return directLink;
   const noteLink = String(candidate.note || "").match(/https?:\/\/(?:zalo\.me|zaloapp\.com|chat\.zalo\.me)[^\s]+/i);
   if (noteLink) return noteLink[0];
-  const digits = String(candidate.phone || "").replace(/\D/g, "");
-  return digits ? `https://zalo.me/${digits}` : "";
+  return getVietnamZaloLinkFromPhone(candidate.phone);
 }
 
 function renderLinkedName(name, link) {
@@ -1547,11 +1719,10 @@ function renderLinkedName(name, link) {
 }
 
 function renderCandidateNameCell(candidate, zaloLink) {
-  const phone = candidate.phone || "Chưa có SĐT";
   return `
     <span class="candidate-name-cell">
       ${renderLinkedName(candidate.fullName || candidate.name, zaloLink)}
-      <small>${escapeHtml(phone)}</small>
+      <small>${renderPhoneWithFlag(candidate.phone)}</small>
     </span>
   `;
 }
@@ -1703,7 +1874,7 @@ function renderCandidateTable(candidates) {
   `;
   list.querySelectorAll("[data-candidate-order-code]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const order = currentOrders.find((item) => item.code === button.dataset.candidateOrderCode);
+      const order = candidateOrderOptions.find((item) => item.code === button.dataset.candidateOrderCode);
       if (!order) return;
       button.disabled = true;
       try {
@@ -1956,16 +2127,18 @@ async function renderActiveSection() {
 
   if (section === "candidates") {
     if (candidatesLoaded) {
+      if (!candidateOrderOptions.length) candidateOrderOptions = await loadCandidateOrderOptions();
       renderCandidateTable(currentCandidates);
       return;
     }
     if (!list.querySelector("#candidateSearch, .preload-candidates")) {
       renderCandidateLoadingTable();
     }
-    const [candidates, applications] = await Promise.all([loadCandidates(), loadApplications()]);
+    const [candidates, applications, orders] = await Promise.all([loadCandidates(), loadApplications(), loadCandidateOrderOptions()]);
     if (renderToken !== sectionRenderToken || activeSection !== section) return;
     currentCandidates = candidates;
     currentApplications = applications;
+    candidateOrderOptions = orders;
     candidatesLoaded = true;
     renderCandidateTable(currentCandidates);
     return;
@@ -1999,13 +2172,17 @@ async function refreshDashboard() {
       return;
     }
 
-    const bootstrap = activeSection === "candidates" ? await loadBootstrap() : null;
-    const data = bootstrap?.dashboard || await loadDashboard();
+    const bootstrap = activeSection === "candidates"
+      ? await Promise.all([loadDashboard(), loadCandidates(), loadApplications(), loadCtvs()])
+      : null;
+    const data = bootstrap?.[0] || await loadDashboard();
     currentOrders = data.orders;
+    orderPagination = data.pagination || orderPagination;
+    currentOrderPage = orderPagination.page;
     if (bootstrap && activeSection === "candidates") {
-      currentCandidates = bootstrap.candidates || [];
-      currentApplications = bootstrap.applications || [];
-      currentCtvs = bootstrap.ctvs || [];
+      currentCandidates = bootstrap[1] || [];
+      currentApplications = bootstrap[2] || [];
+      currentCtvs = bootstrap[3] || [];
       candidatesLoaded = true;
       ctvsLoaded = true;
     }
@@ -2035,7 +2212,8 @@ function bindNavigation() {
       sectionRenderToken++;
       localStorage.setItem("activeDashboardSection", activeSection);
       document.documentElement.dataset.activeSection = activeSection;
-      document.getElementById("pageTitle").textContent = sectionTitles[section].page;
+      const pageTitle = document.getElementById("pageTitle");
+      if (pageTitle) pageTitle.textContent = sectionTitles[section].page;
       document.getElementById("primaryPanelTitle").textContent = sectionTitles[section].panel;
       updateTopbarCreateButton();
       renderActiveSection().catch((error) => {
@@ -2052,7 +2230,8 @@ function applyActiveNavigation() {
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.classList.toggle("is-active", item.dataset.section === activeSection);
   });
-  document.getElementById("pageTitle").textContent = sectionTitles[activeSection].page;
+  const pageTitle = document.getElementById("pageTitle");
+  if (pageTitle) pageTitle.textContent = sectionTitles[activeSection].page;
   document.getElementById("primaryPanelTitle").textContent = sectionTitles[activeSection].panel;
   updateTopbarCreateButton();
 }
@@ -2120,7 +2299,7 @@ function openCtvDetail(ctv) {
       <dl class="detail-list ctv-detail-list">
         <div><dt>ID</dt><dd>${detailValue(formatShortId(ctv.id))}</dd></div>
         <div><dt>Họ tên</dt><dd>${detailValue(ctv.fullName || ctv.name)}</dd></div>
-        <div><dt>Số điện thoại</dt><dd>${detailValue(ctv.phone)}</dd></div>
+        <div><dt>Số điện thoại</dt><dd>${renderPhoneWithFlag(ctv.phone)}</dd></div>
         <div><dt>Email</dt><dd>${detailValue(ctv.email)}</dd></div>
       </dl>
     </div>
@@ -2648,6 +2827,7 @@ function resetCreateCandidateForm() {
   form.elements.cvFileName.value = "";
   document.getElementById("candidateCvFile").value = "";
   setCandidateCvStatus("");
+  updateCandidateCvDeleteButton();
   document.getElementById("candidateStagePreview").value = "Chờ PV";
   syncCandidateOrderFields();
   syncCandidateCtvFields();
@@ -2673,6 +2853,23 @@ function setCandidateCvStatus(text, isError = false) {
   const status = document.getElementById("candidateCvStatus");
   status.textContent = text;
   status.classList.toggle("error", isError);
+  updateCandidateCvDeleteButton();
+}
+
+function updateCandidateCvDeleteButton() {
+  const button = document.getElementById("deleteCandidateCvButton");
+  const form = document.getElementById("createCandidateForm");
+  if (!button || !form) return;
+  button.hidden = !form.elements.cvDataUrl.value && !form.elements.cvFileName.value;
+}
+
+function deleteCandidateCvFromForm() {
+  const form = document.getElementById("createCandidateForm");
+  form.elements.cvDataUrl.value = "__DELETE_CV__";
+  form.elements.cvFileName.value = "";
+  document.getElementById("candidateCvFile").value = "";
+  setCandidateCvStatus("CV sẽ được xóa khi bấm cập nhật.");
+  document.getElementById("deleteCandidateCvButton").hidden = true;
 }
 
 function readCandidateCvFile(file, form) {
@@ -2690,6 +2887,7 @@ function readCandidateCvFile(file, form) {
     form.elements.cvDataUrl.value = reader.result;
     form.elements.cvFileName.value = file.name;
     setCandidateCvStatus(`Đã chọn file ${file.name}`);
+    updateCandidateCvDeleteButton();
   };
   reader.onerror = () => {
     setCandidateCvStatus("Không đọc được file CV.", true);
@@ -2719,7 +2917,7 @@ async function openEditCandidateModal(candidateId) {
   setCandidateDialogMode("edit");
   resetCreateCandidateForm();
   await prepareCandidateModalOptions();
-  const order = currentOrders.find((item) => item.id === application?.orderId || item.code === application?.orderCode);
+  const order = candidateOrderOptions.find((item) => item.id === application?.orderId || item.code === application?.orderCode);
   const ctv = currentCtvs.find((item) => item.id === application?.ctvId);
 
   form.elements.fullName.value = candidate.fullName || candidate.name || "";
@@ -2778,6 +2976,7 @@ function bindCreateCandidateModal() {
     const fileInput = document.getElementById("candidateCvFile");
     readCandidateCvFile(fileInput.files?.[0], form);
   });
+  document.getElementById("deleteCandidateCvButton").addEventListener("click", deleteCandidateCvFromForm);
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) closeCreateCandidateModal();
   });
@@ -2811,8 +3010,8 @@ function bindCreateCandidateModal() {
       return;
     }
 
-    if (payload.phone?.trim() && !isValidVietnamMobile(payload.phone)) {
-      message.textContent = "SĐT ứng viên không đúng định dạng. Vui lòng nhập số di động Việt Nam 10 số.";
+    if (payload.phone?.trim() && !isValidSupportedMobile(payload.phone)) {
+      message.textContent = "SĐT ứng viên không đúng định dạng. Vui lòng nhập số di động Việt Nam hoặc Nhật.";
       message.className = "form-message error";
       form.elements.phone.focus();
       return;
@@ -2839,10 +3038,9 @@ function bindCreateCandidateModal() {
       const candidateId = editingCandidateId;
       const wasEditing = Boolean(editingCandidateId);
 
-      message.textContent = "";
+      message.textContent = wasEditing ? "Đang cập nhật ứng viên..." : "Đang thêm ứng viên...";
       message.className = "form-message";
       submitButton.disabled = true;
-      closeCreateCandidateModal();
 
       if (editingCandidateId) {
         await updateCandidate(editingCandidateId, payload);
@@ -2867,19 +3065,24 @@ function bindCreateCandidateModal() {
         if (editingApplicationId) {
           await updateApplication(editingApplicationId, applicationPayload);
         } else {
-          await createApplication(applicationPayload);
+          const application = await createApplication(applicationPayload);
+          editingApplicationId = application.id || "";
         }
       }
 
+      applyCandidateUpdateToState(candidateId || editingCandidateId, editingApplicationId, payload, selectedOrder, selectedCtv);
+      renderCandidateTable(currentCandidates);
       message.textContent = wasEditing ? "Đã cập nhật ứng viên." : "Đã thêm ứng viên.";
       message.className = "form-message success";
       candidatesLoaded = false;
-      resetCreateCandidateForm();
-      refreshDashboard().catch((error) => {
-        console.error(error);
-        message.textContent = error.message;
-        message.className = "form-message error";
-      });
+      submitButton.disabled = false;
+      setTimeout(() => {
+        closeCreateCandidateModal();
+        resetCreateCandidateForm();
+        refreshDashboard().catch((error) => {
+          console.error(error);
+        });
+      }, 650);
     } catch (error) {
       message.textContent = error.message;
       message.className = "form-message error";
@@ -2911,6 +3114,8 @@ function normalizeInterviewLink(value) {
 }
 
 function setInterviewEditMode(isEditing) {
+  document.getElementById("interviewCandidateStage").hidden = isEditing;
+  document.getElementById("interviewCandidateStageInput").hidden = !isEditing;
   document.getElementById("interviewScheduleDate").hidden = isEditing;
   document.getElementById("interviewScheduleLink").hidden = isEditing;
   document.getElementById("interviewScheduleDateInput").hidden = !isEditing;
@@ -2931,10 +3136,15 @@ function openInterviewScheduleDialog(applicationId, candidateId) {
     || {};
   const title = candidate.fullName || candidate.name || application?.candidateName || "Ứng viên";
   const link = application?.interviewLink || application?.interviewUrl || application?.meetingLink || "";
+  const candidateStage = getCandidateStatus(candidate, application);
   const linkElement = document.getElementById("interviewScheduleLink");
   activeInterviewApplicationId = application?.id || "";
 
   document.getElementById("interviewScheduleTitle").textContent = `Lịch PV - ${title}`;
+  const stageElement = document.getElementById("interviewCandidateStage");
+  stageElement.textContent = candidateStage;
+  stageElement.className = `candidate-status ${getCandidateStatusClass(candidateStage)}`;
+  document.getElementById("interviewCandidateStageInput").value = candidateStage;
   document.getElementById("interviewScheduleDate").textContent = formatInterviewDate(application?.interviewAt);
   document.getElementById("interviewScheduleDateInput").value = formatDateInputValue(application?.interviewAt);
   document.getElementById("interviewScheduleLinkInput").value = link;
@@ -2964,14 +3174,10 @@ async function saveInterviewSchedule() {
 
   const interviewAt = document.getElementById("interviewScheduleDateInput").value;
   const interviewLink = normalizeInterviewLink(document.getElementById("interviewScheduleLinkInput").value);
+  const candidateStage = document.getElementById("interviewCandidateStageInput").value;
   const currentInterviewAt = formatDateInputValue(application.interviewAt);
   const currentInterviewLink = normalizeInterviewLink(application.interviewLink || application.interviewUrl || application.meetingLink || "");
-
-  if (!interviewAt && !interviewLink) {
-    status.textContent = "Vui lòng nhập ngày PV hoặc link PV trước khi lưu.";
-    status.className = "form-message error";
-    return;
-  }
+  const currentStage = getCandidateStatus(null, application);
 
   if (interviewLink) {
     try {
@@ -2983,7 +3189,7 @@ async function saveInterviewSchedule() {
     }
   }
 
-  if (interviewAt === currentInterviewAt && interviewLink === currentInterviewLink) {
+  if (interviewAt === currentInterviewAt && interviewLink === currentInterviewLink && candidateStage === currentStage) {
     status.textContent = "Chưa có thay đổi để lưu.";
     status.className = "form-message";
     return;
@@ -2993,7 +3199,7 @@ async function saveInterviewSchedule() {
     orderId: application.orderId,
     candidateId: application.candidateId,
     ctvId: application.ctvId || "",
-    stage: application.stage || "Chờ PV",
+    stage: candidateStage,
     status: application.status || "Đang xử lý",
     sourceType: application.sourceType || "CTV",
     sourceNote: application.sourceNote || application.ctvName || "",
@@ -3004,19 +3210,24 @@ async function saveInterviewSchedule() {
     interviewLink,
   };
 
-  status.textContent = "Đang lưu lịch PV...";
+  status.textContent = "Đang lưu thay đổi...";
   status.className = "form-message";
   try {
     await updateApplication(application.id, payload);
     application.interviewAt = interviewAt;
     application.interviewLink = interviewLink;
+    application.stage = candidateStage;
+    const stageElement = document.getElementById("interviewCandidateStage");
+    stageElement.textContent = candidateStage;
+    stageElement.className = `candidate-status ${getCandidateStatusClass(candidateStage)}`;
     document.getElementById("interviewScheduleDate").textContent = formatInterviewDate(interviewAt);
     const linkElement = document.getElementById("interviewScheduleLink");
     linkElement.textContent = interviewLink ? "Mở link PV" : "Chưa có link PV";
     linkElement.href = interviewLink || "#";
     linkElement.toggleAttribute("aria-disabled", !interviewLink);
     linkElement.classList.toggle("is-disabled", !interviewLink);
-    status.textContent = "Đã lưu lịch PV.";
+    renderCandidateTable(currentCandidates);
+    status.textContent = "Đã lưu trạng thái và lịch PV.";
     status.className = "form-message success";
     setInterviewEditMode(false);
   } catch (error) {
@@ -3094,8 +3305,8 @@ function bindCreateCtvModal() {
       return;
     }
 
-    if (!isValidVietnamMobile(payload.phone)) {
-      message.textContent = "SĐT CTV không đúng định dạng. Vui lòng nhập số di động Việt Nam 10 số.";
+    if (!isValidSupportedMobile(payload.phone)) {
+      message.textContent = "SĐT CTV không đúng định dạng. Vui lòng nhập số di động Việt Nam hoặc Nhật.";
       message.className = "form-message error";
       form.elements.phone.focus();
       return;
@@ -3142,10 +3353,21 @@ document.addEventListener("DOMContentLoaded", () => {
   bindCreateCandidateModal();
   bindCreateCtvModal();
   bindInterviewScheduleDialog();
+  document.getElementById("orderList")?.addEventListener("click", handleOrderListClick);
+  document.getElementById("orderPagination")?.addEventListener("click", handleOrderPaginationClick);
 
-  ["orderSearch", "orderSortBy", "orderSortDirection"].forEach((id) => {
-    document.getElementById(id)?.addEventListener("input", () => renderOrders(currentOrders));
-    document.getElementById(id)?.addEventListener("change", () => renderOrders(currentOrders));
+  document.getElementById("orderSearch")?.addEventListener("input", () => {
+    window.clearTimeout(orderSearchRenderTimer);
+    orderSearchRenderTimer = window.setTimeout(() => {
+      currentOrderPage = 1;
+      refreshDashboard();
+    }, 160);
+  });
+  ["orderSortBy", "orderSortDirection"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("change", () => {
+      currentOrderPage = 1;
+      refreshDashboard();
+    });
   });
 
   refreshDashboard();

@@ -8,6 +8,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from bson import ObjectId
@@ -22,8 +23,100 @@ MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "recruitment_dashboard").strip()
 SERVER_HOST = "0.0.0.0" if os.getenv("PORT") else os.getenv("SERVER_HOST", "localhost").strip()
 SERVER_PORT = int(os.getenv("PORT") or os.getenv("SERVER_PORT", "5173"))
-CACHE_TTL_SECONDS = 20
+CACHE_TTL_SECONDS = 3600
+DEBUG_API_TIMING = os.getenv("DEBUG_API_TIMING", "0") == "1"
 response_cache = {}
+response_cache_lock = Lock()
+response_cache_key_locks = {}
+cv_binary_cache = {}
+cv_binary_cache_lock = Lock()
+CV_BINARY_CACHE_MAX_ITEMS = 3
+ORDER_LIST_PROJECTION = {
+    "code": 1,
+    "title": 1,
+    "orderType": 1,
+    "jobJson.order_type": 1,
+    "department": 1,
+    "industry": 1,
+    "industries": 1,
+    "headcount": 1,
+    "location": 1,
+    "status": 1,
+    "createdAt": 1,
+    "updatedAt": 1,
+    "postingStatus": 1,
+    "postingGroup": 1,
+    "postingLink": 1,
+    "interactions": 1,
+    "hasImage": 1,
+    "hasImageData": 1,
+}
+CANDIDATE_LIST_PROJECTION = {
+    "fullName": 1,
+    "phone": 1,
+    "email": 1,
+    "birthYear": 1,
+    "gender": 1,
+    "address": 1,
+    "zaloLink": 1,
+    "zaloUrl": 1,
+    "zalo": 1,
+    "groupLink": 1,
+    "groupUrl": 1,
+    "facebookGroup": 1,
+    "sourceLink": 1,
+    "cvFileName": 1,
+    "cvLink": 1,
+    "cvUrl": 1,
+    "resumeLink": 1,
+    "resumeUrl": 1,
+    "profileLink": 1,
+    "profileUrl": 1,
+    "fileUrl": 1,
+    "role": 1,
+    "stage": 1,
+    "status": 1,
+    "note": 1,
+    "createdAt": 1,
+    "updatedAt": 1,
+    "hasCvData": 1,
+}
+CTV_LIST_PROJECTION = {
+    "fullName": 1,
+    "initials": 1,
+    "phone": 1,
+    "email": 1,
+    "zaloLink": 1,
+    "zaloUrl": 1,
+    "zalo": 1,
+    "status": 1,
+    "note": 1,
+    "createdAt": 1,
+    "updatedAt": 1,
+}
+APPLICATION_LIST_PROJECTION = {
+    "orderId": 1,
+    "candidateId": 1,
+    "ctvId": 1,
+    "stage": 1,
+    "status": 1,
+    "sourceType": 1,
+    "sourceNote": 1,
+    "groupLink": 1,
+    "groupUrl": 1,
+    "facebookGroup": 1,
+    "sourceLink": 1,
+    "role": 1,
+    "note": 1,
+    "appliedAt": 1,
+    "interviewAt": 1,
+    "interviewLink": 1,
+    "interviewUrl": 1,
+    "meetingLink": 1,
+    "resultAt": 1,
+    "createdAt": 1,
+    "updatedAt": 1,
+}
 BLOCKED_STATIC_NAMES = {
     ".env",
     ".env.example",
@@ -43,22 +136,47 @@ def cache_key(name, query=None):
 
 def get_cached_response(name, query=None):
     key = cache_key(name, query)
-    item = response_cache.get(key)
-    if not item:
-        return None
-    created_at, data = item
-    if time.time() - created_at > CACHE_TTL_SECONDS:
-        response_cache.pop(key, None)
-        return None
-    return data
+    with response_cache_lock:
+        item = response_cache.get(key)
+        if not item:
+            return None
+        created_at, data = item
+        if time.time() - created_at > CACHE_TTL_SECONDS:
+            response_cache.pop(key, None)
+            return None
+        return data
 
 def set_cached_response(name, data, query=None):
-    response_cache[cache_key(name, query)] = (time.time(), data)
+    with response_cache_lock:
+        response_cache[cache_key(name, query)] = (time.time(), data)
     return data
 
 def clear_response_cache():
-    response_cache.clear()
+    with response_cache_lock:
+        response_cache.clear()
+        response_cache_key_locks.clear()
 
+def cached_response(name, loader, query=None):
+    started_at = time.perf_counter()
+    cached = get_cached_response(name, query)
+    if cached is not None:
+        if DEBUG_API_TIMING:
+            print(f"cache hit {cache_key(name, query)} {(time.perf_counter() - started_at) * 1000:.1f}ms", flush=True)
+        return cached
+    key = cache_key(name, query)
+    with response_cache_lock:
+        key_lock = response_cache_key_locks.setdefault(key, Lock())
+    with key_lock:
+        cached = get_cached_response(name, query)
+        if cached is not None:
+            if DEBUG_API_TIMING:
+                print(f"cache hit {key} {(time.perf_counter() - started_at) * 1000:.1f}ms", flush=True)
+            return cached
+        data = loader()
+        set_cached_response(name, data, query)
+        if DEBUG_API_TIMING:
+            print(f"cache miss {key} {(time.perf_counter() - started_at) * 1000:.1f}ms", flush=True)
+        return data
 
 def utc_now():
     return datetime.now(timezone.utc)
@@ -103,6 +221,10 @@ def industry_key(value):
     normalized = unicodedata.normalize("NFD", str(value or "").lower())
     return re.sub(r"\s+", " ", "".join(char for char in normalized if unicodedata.category(char) != "Mn")).strip()
 
+
+def order_search_key(*values):
+    return industry_key(" ".join(str(value or "") for value in values))
+
 def normalize_phone_key(value):
     return str(value or "").strip()
 
@@ -111,6 +233,16 @@ def has_valid_phone_characters(value):
 
 def is_valid_vietnam_mobile(value):
     return bool(re.fullmatch(r"0(?:3|5|7|8|9)\d{8}", value or ""))
+
+def is_valid_japan_mobile(value):
+    return bool(re.fullmatch(r"(?:0[789]0\d{8}|81[789]0\d{8})", value or ""))
+
+def is_valid_supported_mobile(value):
+    return is_valid_vietnam_mobile(value) or is_valid_japan_mobile(value)
+
+def vietnam_zalo_link_from_phone(value):
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    return f"https://zalo.me/{digits}" if is_valid_vietnam_mobile(digits) else ""
 
 def normalize_zalo_key(value):
     raw = str(value or "").strip().lower()
@@ -198,7 +330,7 @@ def infer_industries(code, title, department, job_json, raw_text):
 
 
 def badge_for_status(status):
-    return {
+    payload = {
         "Gấp": "danger",
         "Đúng tiến độ": "success",
         "Sắp chốt": "warning",
@@ -263,6 +395,25 @@ def normalize_order_payload(data):
         "interactions": int(data.get("interactions") or 0),
         "updatedAt": utc_now(),
     }
+    payload["searchKey"] = order_search_key(
+        code, title, department, primary_industry, " ".join(industries),
+        order_type, payload["location"], payload["status"],
+    )
+    return payload
+
+
+def has_valid_cv_data_url(value):
+    """Return whether a data URL contains decodable, non-empty CV content."""
+    if not isinstance(value, str):
+        return False
+    match = re.match(r"^data:([^;,]+)?(;base64)?,(.*)$", value, re.DOTALL)
+    if not match:
+        return False
+    try:
+        payload = base64.b64decode(match.group(3), validate=True) if match.group(2) else match.group(3).encode()
+    except (ValueError, TypeError):
+        return False
+    return bool(payload)
 
 
 def normalize_candidate_payload(data):
@@ -276,13 +427,16 @@ def normalize_candidate_payload(data):
     phone_key = normalize_phone_key(phone) if phone else ""
     if phone and not phone_key:
         raise ValueError("SĐT ứng viên không hợp lệ.")
-    if phone and not is_valid_vietnam_mobile(phone_key):
-        raise ValueError("SĐT ứng viên không đúng định dạng. Vui lòng nhập số di động Việt Nam 10 số.")
+    if phone and not is_valid_supported_mobile(phone_key):
+        raise ValueError("SĐT ứng viên không đúng định dạng. Vui lòng nhập số di động Việt Nam hoặc Nhật.")
     zalo_link = (data.get("zaloLink") or data.get("zaloUrl") or data.get("zalo") or "").strip()
     email = data.get("email", "").strip()
     email_key = normalize_email_key(email)
     if email_key and not is_valid_email(email_key):
         raise ValueError("Email ứng viên không đúng định dạng.")
+    cv_data_url = data.get("cvDataUrl") or ""
+    if cv_data_url not in {"__KEEP_EXISTING_CV__", "__DELETE_CV__"} and cv_data_url and not has_valid_cv_data_url(cv_data_url):
+        raise ValueError("File CV không hợp lệ hoặc không có nội dung.")
     payload = {
         "fullName": full_name,
         "phone": phone,
@@ -292,9 +446,10 @@ def normalize_candidate_payload(data):
         "address": data.get("address", ""),
         "zaloLink": zalo_link,
         "groupLink": data.get("groupLink") or data.get("groupUrl") or data.get("facebookGroup") or data.get("sourceLink") or "",
-        "cvDataUrl": data.get("cvDataUrl") or "",
+        "cvDataUrl": cv_data_url,
         "cvFileName": data.get("cvFileName") or "",
         "cvLink": data.get("cvLink") or data.get("cvUrl") or data.get("resumeLink") or data.get("resumeUrl") or data.get("profileLink") or data.get("profileUrl") or data.get("fileUrl") or "",
+        "hasCvData": has_valid_cv_data_url(cv_data_url),
         "role": data.get("role", "Ứng viên"),
         "stage": data.get("stage", "Chờ PV"),
         "status": data.get("status", "Đang hoạt động"),
@@ -324,8 +479,8 @@ def normalize_ctv_payload(data):
     phone_key = normalize_phone_key(phone)
     if not phone_key:
         raise ValueError("SĐT CTV không hợp lệ.")
-    if not is_valid_vietnam_mobile(phone_key):
-        raise ValueError("SĐT CTV không đúng định dạng. Vui lòng nhập số di động Việt Nam 10 số.")
+    if not is_valid_supported_mobile(phone_key):
+        raise ValueError("SĐT CTV không đúng định dạng. Vui lòng nhập số di động Việt Nam hoặc Nhật.")
     email = data.get("email", "").strip()
     email_key = normalize_email_key(email)
     if email_key and not is_valid_email(email_key):
@@ -405,7 +560,7 @@ def get_bootstrap_data(query):
         dashboard_future = executor.submit(store.get_dashboard_data, query, False)
         candidates_future = executor.submit(store.list_candidates)
         applications_future = executor.submit(store.list_applications)
-        ctvs_future = executor.submit(store.list_ctvs)
+        ctvs_future = executor.submit(store.list_ctvs, False)
         dashboard = dashboard_future.result()
         return {
             "ok": True,
@@ -414,6 +569,38 @@ def get_bootstrap_data(query):
             "applications": applications_future.result().get("applications", []),
             "ctvs": ctvs_future.result().get("ctvs", []),
         }
+
+def prewarm_response_cache():
+    query = {"status": ["all"], "search": [""]}
+    query_string = "status=all&search="
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            ("metrics", None): executor.submit(store.get_metrics),
+            ("dashboard", query_string): executor.submit(store.get_dashboard_data, query, False),
+            ("candidates", None): executor.submit(store.list_candidates),
+            ("applications", None): executor.submit(store.list_applications),
+            ("ctvs", None): executor.submit(store.list_ctvs),
+        }
+        prewarmed = {}
+        for (name, cache_query), future in futures.items():
+            try:
+                data = future.result()
+                set_cached_response(name, data, cache_query)
+                prewarmed[name] = data
+                if DEBUG_API_TIMING:
+                    print(f"prewarmed {cache_key(name, cache_query)}", flush=True)
+            except Exception as error:
+                print(f"Không thể prewarm cache {name}: {error}")
+        if {"dashboard", "candidates", "applications", "ctvs"}.issubset(prewarmed):
+            set_cached_response("bootstrap", {
+                "ok": True,
+                "dashboard": prewarmed["dashboard"],
+                "candidates": prewarmed["candidates"].get("candidates", []),
+                "applications": prewarmed["applications"].get("applications", []),
+                "ctvs": prewarmed["ctvs"].get("ctvs", []),
+            }, query_string)
+            if DEBUG_API_TIMING:
+                print(f"prewarmed {cache_key('bootstrap', query_string)}", flush=True)
 
 
 class MongoStore:
@@ -431,6 +618,10 @@ class MongoStore:
         self.db.orders.create_index([("status", ASCENDING)])
         self.db.orders.create_index([("industry", ASCENDING)])
         self.db.orders.create_index([("createdAt", DESCENDING)])
+        self.db.orders.create_index([("department", ASCENDING), ("createdAt", DESCENDING)])
+        self.db.orders.create_index([("code", ASCENDING), ("createdAt", DESCENDING)])
+        self.db.orders.create_index([("searchKey", ASCENDING)])
+        self.backfill_order_search_keys()
         self.backfill_candidate_unique_keys()
         self.drop_unique_index_if_present("candidates", "phone_1")
         self.create_unique_index_if_clean("candidates", "phoneKey")
@@ -451,6 +642,16 @@ class MongoStore:
         index_info = self.db[collection_name].index_information().get(index_name)
         if index_info and index_info.get("unique"):
             self.db[collection_name].drop_index(index_name)
+
+    def backfill_order_search_keys(self):
+        for order in self.db.orders.find({}, {"code": 1, "title": 1, "department": 1, "industry": 1, "industries": 1, "orderType": 1, "location": 1, "status": 1}):
+            search_key = order_search_key(
+                order.get("code"), order.get("title"), order.get("department"),
+                order.get("industry"), " ".join(order.get("industries") or []),
+                order.get("orderType"), order.get("location"), order.get("status"),
+            )
+            if order.get("searchKey") != search_key:
+                self.db.orders.update_one({"_id": order["_id"]}, {"$set": {"searchKey": search_key}})
 
     def create_unique_index_if_clean(self, collection_name, field):
         duplicate = next(self.db[collection_name].aggregate([
@@ -487,6 +688,13 @@ class MongoStore:
                 update["$unset"] = unset_values
             if update:
                 self.db.candidates.update_one({"_id": candidate["_id"]}, update)
+        for candidate in self.db.candidates.find({}, {"cvDataUrl": 1, "hasCvData": 1}):
+            has_cv_data = has_valid_cv_data_url(candidate.get("cvDataUrl"))
+            if candidate.get("hasCvData") != has_cv_data:
+                self.db.candidates.update_one(
+                    {"_id": candidate["_id"]},
+                    {"$set": {"hasCvData": has_cv_data}},
+                )
 
     def backfill_ctv_unique_keys(self):
         for ctv in self.db.ctvs.find({}, {"phone": 1}):
@@ -503,11 +711,16 @@ class MongoStore:
             checks.append(("zaloKey", payload["zaloKey"], "Link Zalo ứng viên đã tồn tại."))
         if payload.get("emailKey"):
             checks.append(("emailKey", payload["emailKey"], "Email ứng viên đã tồn tại."))
+        if not checks:
+            return
+        query = {"$or": [{field: value} for field, value, _ in checks]}
+        if exclude_id:
+            query["_id"] = {"$ne": exclude_id}
+        existing = self.db.candidates.find_one(query, {field: 1 for field, _, _ in checks})
+        if not existing:
+            return
         for field, value, message in checks:
-            query = {field: value}
-            if exclude_id:
-                query["_id"] = {"$ne": exclude_id}
-            if self.db.candidates.find_one(query, {"_id": 1}):
+            if existing.get(field) == value:
                 raise ValueError(message)
 
     def assert_ctv_unique(self, payload, ctv_id=None):
@@ -604,39 +817,49 @@ class MongoStore:
         if status != "all":
             filter_query["status"] = status
         if search:
+            # Treat the user query as plain text, not a MongoDB regex pattern.
+            search_pattern = re.escape(search)
+            normalized_search_pattern = re.escape(industry_key(search))
             filter_query["$or"] = [
-                {"code": {"$regex": search, "$options": "i"}},
-                {"title": {"$regex": search, "$options": "i"}},
-                {"department": {"$regex": search, "$options": "i"}},
-                {"industry": {"$regex": search, "$options": "i"}},
-                {"industries": {"$regex": search, "$options": "i"}},
-                {"status": {"$regex": search, "$options": "i"}},
+                {"searchKey": {"$regex": normalized_search_pattern}},
+                {"code": {"$regex": search_pattern, "$options": "i"}},
+                {"title": {"$regex": search_pattern, "$options": "i"}},
+                {"department": {"$regex": search_pattern, "$options": "i"}},
+                {"industry": {"$regex": search_pattern, "$options": "i"}},
+                {"industries": {"$regex": search_pattern, "$options": "i"}},
+                {"location": {"$regex": search_pattern, "$options": "i"}},
+                {"orderType": {"$regex": search_pattern, "$options": "i"}},
+                {"jobJson.order_type": {"$regex": search_pattern, "$options": "i"}},
+                {"jobJson.orderType": {"$regex": search_pattern, "$options": "i"}},
+                {"status": {"$regex": search_pattern, "$options": "i"}},
             ]
 
-        projection = None
-        if not include_heavy:
-            projection = {
-                "code": 1,
-                "title": 1,
-                "orderType": 1,
-                "jobJson.order_type": 1,
-                "department": 1,
-                "industry": 1,
-                "industries": 1,
-                "headcount": 1,
-                "location": 1,
-                "status": 1,
-                "createdAt": 1,
-                "updatedAt": 1,
-                "postingStatus": 1,
-                "postingGroup": 1,
-                "postingLink": 1,
-                "interactions": 1,
-                "hasImage": 1,
-                "hasImageData": 1,
-            }
-        order_docs = list(self.db.orders.find(filter_query, projection).sort("createdAt", DESCENDING))
-        application_counts = self.get_application_counts_by_order()
+        # The orders tab only needs one compact page.  Keep details (including images)
+        # behind the individual order endpoint instead of sending them with the list.
+        try:
+            page = max(1, int(query.get("page", ["1"])[0]))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = min(50, max(1, int(query.get("pageSize", ["5"])[0])))
+        except (TypeError, ValueError):
+            page_size = 5
+        sort_by = query.get("sortBy", ["createdAt"])[0]
+        sort_field = {"createdAt": "createdAt", "industry": "department", "name": "code"}.get(sort_by, "createdAt")
+        sort_direction = ASCENDING if query.get("sortDirection", ["desc"])[0] == "asc" else DESCENDING
+        total_orders = self.db.orders.count_documents(filter_query)
+        total_pages = max(1, (total_orders + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        projection = None if include_heavy else ORDER_LIST_PROJECTION
+        order_docs = list(self.db.orders.find(filter_query, projection).sort([(sort_field, sort_direction), ("_id", DESCENDING)]).skip((page - 1) * page_size).limit(page_size))
+        page_order_ids = [order["_id"] for order in order_docs]
+        application_counts = {
+            row["_id"]: row["total"]
+            for row in self.db.applications.aggregate([
+                {"$match": {"orderId": {"$in": page_order_ids}}},
+                {"$group": {"_id": "$orderId", "total": {"$sum": 1}}},
+            ])
+        } if page_order_ids else {}
         orders = []
         for order in order_docs:
             order["applicationCount"] = application_counts.get(order["_id"], 0)
@@ -687,27 +910,83 @@ class MongoStore:
                 })
 
         active_collaborators = self.db.ctvs.count_documents({"status": {"$ne": "Ngừng hoạt động"}})
-        return build_dashboard_response(orders, stage_lookup, total_candidates, collaborators, candidates, active_collaborators, candidate_total)
+        response = build_dashboard_response(orders, stage_lookup, total_candidates, collaborators, candidates, active_collaborators, candidate_total)
+        # Dashboard metrics are global aggregates, independent of the five orders
+        # returned for the current list page.
+        response["metrics"]["openOrders"] = self.db.orders.count_documents({"status": {"$ne": "Đã đóng"}})
+        response["metrics"]["urgentOrders"] = self.db.orders.count_documents({"status": "Gấp"})
+        response["pagination"] = {
+            "page": page,
+            "pageSize": page_size,
+            "total": total_orders,
+            "totalPages": total_pages,
+        }
+        return response
 
     def get_metrics(self):
-        stage_lookup = {stage: 0 for stage in ["Chờ PV", "Chờ về cty", "Hoàn thành"]}
-        for row in self.db.applications.aggregate([{"$group": {"_id": "$stage", "total": {"$sum": 1}}}]):
-            stage_lookup[row["_id"] or "Chờ PV"] = row["total"]
-        candidate_total = self.db.candidates.count_documents({})
+        def get_stage_lookup():
+            stages = {stage: 0 for stage in ["Chờ PV", "Chờ về cty", "Hoàn thành"]}
+            for row in self.db.applications.aggregate([{"$group": {"_id": "$stage", "total": {"$sum": 1}}}]):
+                stages[row["_id"] or "Chờ PV"] = row["total"]
+            return stages
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            stage_future = executor.submit(get_stage_lookup)
+            candidate_total_future = executor.submit(self.db.candidates.count_documents, {})
+            active_collaborators_future = executor.submit(
+                self.db.ctvs.count_documents,
+                {"status": {"$ne": "Ngừng hoạt động"}},
+            )
+            order_status_future = executor.submit(
+                lambda: list(self.db.orders.aggregate([
+                    {
+                        "$group": {
+                            "_id": None,
+                            "openOrders": {
+                                "$sum": {"$cond": [{"$ne": ["$status", "Đã đóng"]}, 1, 0]}
+                            },
+                            "urgentOrders": {
+                                "$sum": {"$cond": [{"$eq": ["$status", "Gấp"]}, 1, 0]}
+                            },
+                        }
+                    }
+                ]))
+            )
+            stage_lookup = stage_future.result()
+            candidate_total = candidate_total_future.result()
+            active_collaborators = active_collaborators_future.result()
+            order_status_rows = order_status_future.result()
+
+        order_status = order_status_rows[0] if order_status_rows else {}
         application_total = sum(stage_lookup.values())
         total_candidates = application_total or candidate_total
         return {
             "ok": True,
             "metrics": {
-                "openOrders": self.db.orders.count_documents({"status": {"$ne": "Đã đóng"}}),
-                "urgentOrders": self.db.orders.count_documents({"status": "Gấp"}),
+                "openOrders": order_status.get("openOrders", 0),
+                "urgentOrders": order_status.get("urgentOrders", 0),
                 "newCandidates": candidate_total,
                 "interviewing": stage_lookup.get("Chờ về cty", 0),
-                "activeCollaborators": self.db.ctvs.count_documents({"status": {"$ne": "Ngừng hoạt động"}}),
+                "activeCollaborators": active_collaborators,
                 "filledRate": round((stage_lookup.get("Hoàn thành", 0) / total_candidates) * 100) if total_candidates else 0,
                 "totalCandidates": total_candidates,
             },
         }
+
+    def list_order_options(self):
+        """Compact order records used only by the candidate matching UI."""
+        return {"ok": True, "orders": [
+            {
+                "id": doc_id(item.get("_id")),
+                "code": item.get("code", ""),
+                "title": item.get("title", ""),
+                "department": item.get("department") or item.get("industry", ""),
+                "industry": item.get("industry", ""),
+                "industries": item.get("industries", []),
+                "orderType": item.get("orderType", ""),
+            }
+            for item in self.db.orders.find({}, {"code": 1, "title": 1, "department": 1, "industry": 1, "industries": 1, "orderType": 1}).sort("code", ASCENDING)
+        ]}
 
     def create_order(self, data):
         payload = normalize_order_payload(data)
@@ -769,7 +1048,7 @@ class MongoStore:
                 "address": item.get("address", ""),
                 "zaloLink": item.get("zaloLink") or item.get("zaloUrl") or item.get("zalo") or "",
                 "groupLink": item.get("groupLink") or item.get("groupUrl") or item.get("facebookGroup") or item.get("sourceLink") or "",
-                "hasCv": bool(item.get("cvDataUrl") or item.get("cvLink") or item.get("cvUrl") or item.get("resumeLink") or item.get("resumeUrl") or item.get("profileLink") or item.get("profileUrl") or item.get("fileUrl")),
+                "hasCv": bool(item.get("hasCvData") or item.get("cvLink") or item.get("cvUrl") or item.get("resumeLink") or item.get("resumeUrl") or item.get("profileLink") or item.get("profileUrl") or item.get("fileUrl")),
                 "cvFileName": item.get("cvFileName") or "",
                 "cvLink": item.get("cvLink") or item.get("cvUrl") or item.get("resumeLink") or item.get("resumeUrl") or item.get("profileLink") or item.get("profileUrl") or item.get("fileUrl") or "",
                 "role": item.get("role", "Ứng viên"),
@@ -779,7 +1058,7 @@ class MongoStore:
                 "createdAt": iso_datetime(item.get("createdAt")),
                 "updatedAt": iso_datetime(item.get("updatedAt")),
             }
-            for item in self.db.candidates.find().sort("createdAt", DESCENDING)
+            for item in self.db.candidates.find({}, CANDIDATE_LIST_PROJECTION).sort("createdAt", DESCENDING)
         ]}
 
     def create_candidate(self, data):
@@ -796,8 +1075,27 @@ class MongoStore:
         if payload.get("cvDataUrl") == "__KEEP_EXISTING_CV__":
             payload.pop("cvDataUrl", None)
             payload.pop("cvFileName", None)
+            payload.pop("hasCvData", None)
+        delete_cv = payload.get("cvDataUrl") == "__DELETE_CV__"
+        if delete_cv:
+            payload.pop("cvDataUrl", None)
+            payload.pop("cvFileName", None)
+            payload.pop("cvLink", None)
+            payload["hasCvData"] = False
         update = {"$set": payload}
         unset_fields = {}
+        if delete_cv:
+            unset_fields.update({
+                "cvDataUrl": "",
+                "cvFileName": "",
+                "cvLink": "",
+                "cvUrl": "",
+                "resumeLink": "",
+                "resumeUrl": "",
+                "profileLink": "",
+                "profileUrl": "",
+                "fileUrl": "",
+            })
         if not payload.get("phoneKey"):
             unset_fields["phoneKey"] = ""
         if not payload.get("zaloKey"):
@@ -812,24 +1110,38 @@ class MongoStore:
         return {"ok": True}
 
     def get_candidate_cv(self, candidate_id):
-        item = self.db.candidates.find_one({"_id": mongo_id(candidate_id)}, {"cvDataUrl": 1, "cvFileName": 1, "cvLink": 1})
+        item = self.db.candidates.find_one({"_id": mongo_id(candidate_id)}, {"cvDataUrl": 1, "cvFileName": 1, "updatedAt": 1})
         if not item:
             raise ValueError("Không tìm thấy ứng viên.")
         data_url = item.get("cvDataUrl") or ""
+        if not has_valid_cv_data_url(data_url):
+            raise ValueError("Ứng viên chưa có file CV hợp lệ.")
+        cache_id = f"{candidate_id}:{iso_datetime(item.get('updatedAt'))}"
+        with cv_binary_cache_lock:
+            cached = cv_binary_cache.get(cache_id)
+            if cached:
+                cv_binary_cache.pop(cache_id)
+                cv_binary_cache[cache_id] = cached
+                return cached
+
         match = re.match(r"^data:([^;,]+)?(;base64)?,(.*)$", data_url)
-        if not match:
-            raise ValueError("Ứng viên chưa có file CV.")
         mime_type = match.group(1) or "application/octet-stream"
         raw_data = match.group(3) or ""
         try:
-            payload = base64.b64decode(raw_data) if match.group(2) else unquote(raw_data).encode("utf-8")
-        except Exception as error:
+            payload = base64.b64decode(raw_data, validate=True) if match.group(2) else unquote(raw_data).encode("utf-8")
+        except (ValueError, TypeError) as error:
             raise ValueError("File CV không hợp lệ.") from error
-        return {
+        result = {
             "payload": payload,
             "mimeType": mime_type,
             "fileName": item.get("cvFileName") or "cv",
         }
+        # Keep only a tiny LRU cache to avoid repeatedly decoding large base64 CVs.
+        with cv_binary_cache_lock:
+            cv_binary_cache[cache_id] = result
+            while len(cv_binary_cache) > CV_BINARY_CACHE_MAX_ITEMS:
+                cv_binary_cache.pop(next(iter(cv_binary_cache)))
+        return result
 
     def delete_candidate(self, candidate_id):
         result = self.db.candidates.delete_one({"_id": mongo_id(candidate_id)})
@@ -837,8 +1149,8 @@ class MongoStore:
             raise ValueError("Không tìm thấy ứng viên.")
         return {"ok": True}
 
-    def list_ctvs(self):
-        collaborator_stats = self.get_application_stats_by_ctv()
+    def list_ctvs(self, include_stats=True):
+        collaborator_stats = self.get_application_stats_by_ctv() if include_stats else {}
         return {"ok": True, "ctvs": [
             {
                 "id": doc_id(item.get("_id")),
@@ -847,13 +1159,13 @@ class MongoStore:
                 "phone": item.get("phone", ""),
                 "email": item.get("email", ""),
                 "zaloLink": item.get("zaloLink") or item.get("zaloUrl") or item.get("zalo") or "",
-                "recruitedCount": collaborator_stats.get(item.get("_id"), {}).get("passed", 0),
+                "recruitedCount": collaborator_stats.get(item.get("_id"), {}).get("passed", 0) if include_stats else 0,
                 "status": item.get("status", ""),
                 "note": item.get("note", ""),
                 "createdAt": iso_datetime(item.get("createdAt")),
                 "updatedAt": iso_datetime(item.get("updatedAt")),
             }
-            for item in self.db.ctvs.find().sort("createdAt", DESCENDING)
+            for item in self.db.ctvs.find({}, CTV_LIST_PROJECTION).sort("createdAt", DESCENDING)
         ]}
 
     def create_ctv(self, data):
@@ -879,7 +1191,7 @@ class MongoStore:
 
     def list_applications(self):
         applications = []
-        application_docs = list(self.db.applications.find().sort("createdAt", DESCENDING))
+        application_docs = list(self.db.applications.find({}, APPLICATION_LIST_PROJECTION).sort("createdAt", DESCENDING))
         order_lookup = self.get_docs_by_id("orders", [item.get("orderId") for item in application_docs], {"code": 1, "title": 1})
         candidate_lookup = self.get_docs_by_id("candidates", [item.get("candidateId") for item in application_docs], {"fullName": 1})
         ctv_lookup = self.get_docs_by_id("ctvs", [item.get("ctvId") for item in application_docs], {"fullName": 1, "zaloLink": 1, "phone": 1})
@@ -896,7 +1208,7 @@ class MongoStore:
                 "candidateName": candidate.get("fullName", ""),
                 "ctvId": doc_id(item.get("ctvId")),
                 "ctvName": ctv.get("fullName", ""),
-                "ctvZaloLink": ctv.get("zaloLink") or (f"https://zalo.me/{''.join(ch for ch in str(ctv.get('phone', '')) if ch.isdigit())}" if ctv.get("phone") else ""),
+                "ctvZaloLink": ctv.get("zaloLink") or vietnam_zalo_link_from_phone(ctv.get("phone")),
                 "stage": item.get("stage", ""),
                 "status": item.get("status", ""),
                 "sourceType": item.get("sourceType", ""),
@@ -921,10 +1233,9 @@ class MongoStore:
 
     def update_application(self, application_id, data):
         object_id = mongo_id(application_id)
-        existing = self.db.applications.find_one({"_id": object_id}) or {}
         payload = normalize_application_payload(data)
-        if not data.get("appliedAt") and existing.get("appliedAt"):
-            payload["appliedAt"] = existing.get("appliedAt")
+        if not data.get("appliedAt"):
+            payload.pop("appliedAt", None)
         result = self.db.applications.update_one({"_id": object_id}, {"$set": payload})
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy lượt ứng tuyển.")
@@ -957,7 +1268,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", mime_type)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{quote(file_name)}")
-        self.send_header("Cache-Control", "no-store")
+        # The URL includes the candidate update timestamp, so a browser can safely
+        # reuse an already opened CV without downloading it a second time.
+        self.send_header("Cache-Control", "private, max-age=86400, immutable")
         self.end_headers()
         self.wfile.write(payload)
 
@@ -974,25 +1287,24 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_error(404)
             return
         if parsed.path == "/api/bootstrap":
-            cached = get_cached_response("bootstrap", parsed.query)
-            self.send_json(cached or set_cached_response("bootstrap", get_bootstrap_data(query), parsed.query))
+            self.send_json(cached_response("bootstrap", lambda: get_bootstrap_data(query), parsed.query))
             return
         if parsed.path == "/api/dashboard":
-            cached = get_cached_response("dashboard", parsed.query)
-            self.send_json(cached or set_cached_response("dashboard", store.get_dashboard_data(query, False), parsed.query))
+            self.send_json(cached_response("dashboard", lambda: store.get_dashboard_data(query, False), parsed.query))
+            return
+        if parsed.path == "/api/orders":
+            self.send_json(cached_response("orders", lambda: store.get_dashboard_data(query, False), parsed.query))
+            return
+        if parsed.path == "/api/order-options":
+            self.send_json(cached_response("order-options", store.list_order_options))
             return
         if parsed.path == "/api/metrics":
-            cached = get_cached_response("metrics")
-            self.send_json(cached or set_cached_response("metrics", store.get_metrics()))
+            self.send_json(cached_response("metrics", store.get_metrics))
             return
         if parsed.path == "/api/order-detail":
             code = query.get("code", [""])[0]
-            cached = get_cached_response("order-detail", parsed.query)
-            if cached:
-                self.send_json(cached)
-                return
             try:
-                self.send_json(set_cached_response("order-detail", store.get_order(code), parsed.query))
+                self.send_json(cached_response("order-detail", lambda: store.get_order(code), parsed.query))
             except ValueError as error:
                 self.send_json({"ok": False, "message": str(error)}, 404)
             return
@@ -1007,8 +1319,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "backend": store.name, "database": MONGODB_DB_NAME})
             return
         if parsed.path == "/api/candidates":
-            cached = get_cached_response("candidates")
-            self.send_json(cached or set_cached_response("candidates", store.list_candidates()))
+            self.send_json(cached_response("candidates", store.list_candidates))
             return
         if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/cv"):
             item_id = unquote(parsed.path.removeprefix("/api/candidates/").removesuffix("/cv"))
@@ -1019,12 +1330,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "message": str(error)}, 404)
             return
         if parsed.path == "/api/ctvs":
-            cached = get_cached_response("ctvs")
-            self.send_json(cached or set_cached_response("ctvs", store.list_ctvs()))
+            self.send_json(cached_response("ctvs", store.list_ctvs))
             return
         if parsed.path == "/api/applications":
-            cached = get_cached_response("applications")
-            self.send_json(cached or set_cached_response("applications", store.list_applications()))
+            self.send_json(cached_response("applications", store.list_applications))
             return
         super().do_GET()
 
@@ -1117,6 +1426,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     store.init()
+    prewarm_response_cache()
     server = ThreadingHTTPServer((SERVER_HOST, SERVER_PORT), DashboardHandler)
     print(f"Dashboard server: http://{SERVER_HOST}:{SERVER_PORT}")
     print("Database backend: mongodb")
