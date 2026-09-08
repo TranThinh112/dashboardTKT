@@ -7,9 +7,9 @@
     <script>
       document.documentElement.dataset.activeSection = localStorage.getItem("activeDashboardSection") || "orders";
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20260908-two-way-parse" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-industry-fix" />
     <script defer src="https://unpkg.com/lucide@latest"></script>
-    <script defer src="./script.js?v=20260908-two-way-parse"></script>
+    <script defer src="./script.js?v=20260908-industry-fix"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -189,7 +189,7 @@
           <div class="create-input-column">
             <section class="create-panel">
               <h3>Paste text tóm tắt</h3>
-              <textarea id="rawOrderText" placeholder="Dán text đơn vào đây. Ví dụ:&#10;Mã đơn: AGT1&#10;Vị trí: Nhân viên khách sạn&#10;Nhóm ngành: Khách sạn&#10;Khu vực: Fukui&#10;Số lượng: 3"></textarea>
+              <textarea id="rawOrderText" placeholder="Dán text đơn vào đây. Ví dụ:&#10;🆘 Nhân viên khách sạn - AGT1&#10;Fukui&#10;💰 LCB: 275,000 yên/tháng&#10;🏡 NHÀ: KTX 20,000 yên&#10;💢 Yc: N4 trở lên&#10;SL: 3"></textarea>
               <div class="create-button-row">
                 <button id="parseOrderButton" class="primary-button" type="button">Tách dữ liệu</button>
                 <button id="clearCreateOrderButton" class="ghost-button" type="button">Xóa form</button>
@@ -236,12 +236,8 @@
                   <input name="housing" type="text" placeholder="VD: KTX 20,000 yên" />
                 </label>
                 <label>
-                  <span>Loại đơn</span>
-                  <select name="orderType">
-                    <option>Tokutei</option>
-                    <option>Kỹ sư</option>
-                    <option>Tokutei/Kỹ sư</option>
-                  </select>
+                  <span>YC</span>
+                  <input name="requirement" type="text" placeholder="VD: Nam, N4 trở lên, kinh nghiệm..." />
                 </label>
                 <label>
                   <span>Số lượng cần tuyển</span>
@@ -254,6 +250,14 @@
                     <option>Gấp</option>
                     <option>Đúng tiến độ</option>
                     <option>Sắp chốt</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Loại đơn</span>
+                  <select name="orderType">
+                    <option>Tokutei</option>
+                    <option>Kỹ sư</option>
+                    <option>Tokutei/Kỹ sư</option>
                   </select>
                 </label>
               </div>
@@ -458,7 +462,7 @@
         <div class="detail-dialog-header interview-schedule-header">
           <h2 id="interviewScheduleTitle">Lịch PV</h2>
           <div class="interview-header-actions">
-            <button id="editInterviewSchedule" class="row-icon-button" type="button" aria-label="Sửa lịch PV">
+            <button id="editInterviewSchedule" class="row-icon-button interview-edit-button" type="button" aria-label="Sửa lịch PV">
               <i data-lucide="pencil" aria-hidden="true"></i>
             </button>
             <button id="closeInterviewSchedule" class="lightbox-close-button inline-close-button" type="button" aria-label="Đóng">×</button>

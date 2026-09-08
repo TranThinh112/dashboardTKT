@@ -1525,14 +1525,73 @@ select {
 }
 
 .interview-schedule-header {
+  display: flex;
   align-items: center;
-  padding-right: 42px;
+  justify-content: space-between;
+  gap: 12px;
+  padding-right: 0;
+}
+
+.interview-schedule-header h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .interview-header-actions {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.interview-edit-button {
+  width: auto;
+  min-width: 70px;
+  height: 34px;
+  display: inline-flex;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border-color: #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.interview-edit-button::after {
+  content: "Sửa";
+}
+
+.interview-edit-button:hover {
+  border-color: #60a5fa;
+  background: #dbeafe;
+  color: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+.interview-edit-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.interview-schedule-header .inline-close-button {
+  position: static;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #111827;
+}
+
+.interview-schedule-header .inline-close-button:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
 }
 
 .inline-close-button {
@@ -1613,7 +1672,7 @@ select {
 }
 
 .detail-modal-panel {
-  width: min(720px, calc(100vw - 28px));
+  width: min(980px, calc(100vw - 28px));
   max-height: calc(100vh - 36px);
   overflow: auto;
   background: #ffffff;
@@ -1653,7 +1712,7 @@ select {
 
 .order-detail {
   display: grid;
-  grid-template-columns: minmax(240px, 280px) minmax(300px, 1fr);
+  grid-template-columns: minmax(360px, .95fr) minmax(420px, 1.05fr);
   gap: 14px;
   align-items: stretch;
 }
@@ -1757,8 +1816,8 @@ select {
 
 .order-image,
 .detail-box pre {
-  min-height: 216px;
-  max-height: 216px;
+  min-height: 420px;
+  max-height: 420px;
   overflow: auto;
   border: 1px solid #dbe2ea;
   border-radius: 8px;
@@ -1777,7 +1836,7 @@ select {
 
 .order-image img {
   max-width: 100%;
-  max-height: 196px;
+  max-height: 396px;
   object-fit: contain;
   display: block;
 }

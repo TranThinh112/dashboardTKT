@@ -97,7 +97,7 @@ def stringify_job_json(value):
 
 
 def payload_has_image(payload):
-    return bool(payload.get("hasImage") or payload.get("imageDataUrl") or payload.get("imageUrl"))
+    return bool(payload.get("imageDataUrl") or payload.get("imageUrl"))
 
 def industry_key(value):
     normalized = unicodedata.normalize("NFD", str(value or "").lower())
@@ -172,7 +172,16 @@ def infer_industries(code, title, department, job_json, raw_text):
     ]).lower()
     industries = []
     if any(keyword in combined for keyword in [
-        "agt",
+        "khách sạn",
+        "khach san",
+        "vstn",
+        "vệ sinh",
+        "ve sinh",
+        "dọn dẹp",
+        "don dep",
+    ]):
+        industries.append("Khách sạn")
+    if any(keyword in combined for keyword in [
         "giàn giáo",
         "gian giao",
         "cốt thép",
@@ -209,23 +218,24 @@ def normalize_order_payload(data):
     title = data.get("title", "").strip()
     job_json = parse_job_json(data.get("jobJson", "{}"))
     explicit_industries = split_industries(data.get("industries") or data.get("department") or data.get("industry") or job_json.get("industries") or job_json.get("industry"))
+    # A user-selected industry must override keywords left in an older pasted text.
+    # Inference is only a fallback for orders without an explicit industry.
     inferred_industries = infer_industries(code, title, data.get("department", ""), job_json, data.get("rawText", ""))
-    if "agt" in code.lower() and "Xây dựng" in inferred_industries:
-        industries = ["Xây dựng"]
-    else:
-        industry_keys = {industry_key(industry) for industry in inferred_industries}
-        industries = inferred_industries + [industry for industry in explicit_industries if industry_key(industry) not in industry_keys]
+    industries = explicit_industries or inferred_industries
     primary_industry = industries[0] if industries else ""
     department = primary_industry or data.get("department", "").strip()
     if not code or not title or not department:
         raise ValueError("Vui lòng nhập đủ mã đơn, vị trí và phòng ban.")
 
+    order_type = (data.get("orderType") or job_json.get("order_type") or "Tokutei").strip() or "Tokutei"
+    job_json["order_type"] = order_type
     job_json["industry"] = primary_industry
     job_json["industries"] = industries
     return {
         "code": code,
         "title": title,
         "position": data.get("position", title),
+        "orderType": order_type,
         "industry": primary_industry,
         "industries": industries,
         "department": department,
@@ -243,8 +253,8 @@ def normalize_order_payload(data):
         "workingHours": job_json.get("working_hours", data.get("workingHours", "")),
         "interview": job_json.get("interview", data.get("interview", "")),
         "backFee": job_json.get("back_fee", data.get("backFee", "")),
-        "hasImage": bool(data.get("hasImage")),
-        "hasImageData": bool(data.get("hasImageData")),
+        "hasImage": bool(data.get("imageDataUrl") or data.get("imageUrl")),
+        "hasImageData": bool(data.get("imageDataUrl")),
         "imageUrl": data.get("imageUrl", ""),
         "imageDataUrl": data.get("imageDataUrl", ""),
         "postingStatus": data.get("postingStatus", "Chưa đăng"),
@@ -516,10 +526,16 @@ class MongoStore:
 
     def order_to_api(self, order, include_heavy=True):
         application_count = order.get("applicationCount", 0)
+        # The compact list deliberately omits the large data URL. In that case,
+        # use the persisted flag; detail views validate the actual image source.
+        has_image_source = bool(order.get("imageDataUrl") or order.get("imageUrl"))
+        has_image = has_image_source if include_heavy else bool(order.get("hasImage"))
+        has_image_data = bool(order.get("imageDataUrl")) if include_heavy else bool(order.get("hasImageData"))
         data = {
             "id": doc_id(order.get("_id")),
             "code": order.get("code", ""),
             "title": order.get("title", ""),
+            "orderType": order.get("orderType") or (order.get("jobJson") or {}).get("order_type") or "Tokutei",
             "department": order.get("department") or order.get("industry", ""),
             "industry": order.get("industry", ""),
             "industries": order.get("industries") or split_industries(order.get("industry") or order.get("department", "")),
@@ -534,8 +550,8 @@ class MongoStore:
             "postingGroup": order.get("postingGroup", ""),
             "postingLink": order.get("postingLink", ""),
             "interactions": order.get("interactions", 0),
-            "hasImage": bool(order.get("hasImage")),
-            "hasImageData": bool(order.get("hasImageData")),
+            "hasImage": has_image,
+            "hasImageData": has_image_data,
         }
         if include_heavy:
             data.update({
@@ -554,13 +570,13 @@ class MongoStore:
             ])
         }
 
-    def get_docs_by_id(self, collection_name, ids):
+    def get_docs_by_id(self, collection_name, ids, projection=None):
         clean_ids = [item_id for item_id in ids if item_id]
         if not clean_ids:
             return {}
         return {
             item["_id"]: item
-            for item in self.db[collection_name].find({"_id": {"$in": clean_ids}})
+            for item in self.db[collection_name].find({"_id": {"$in": clean_ids}}, projection)
         }
 
     def get_application_stats_by_ctv(self):
@@ -600,10 +616,24 @@ class MongoStore:
         projection = None
         if not include_heavy:
             projection = {
-                "imageDataUrl": 0,
-                "rawText": 0,
-                "textUpFb": 0,
-                "jobJson": 0,
+                "code": 1,
+                "title": 1,
+                "orderType": 1,
+                "jobJson.order_type": 1,
+                "department": 1,
+                "industry": 1,
+                "industries": 1,
+                "headcount": 1,
+                "location": 1,
+                "status": 1,
+                "createdAt": 1,
+                "updatedAt": 1,
+                "postingStatus": 1,
+                "postingGroup": 1,
+                "postingLink": 1,
+                "interactions": 1,
+                "hasImage": 1,
+                "hasImageData": 1,
             }
         order_docs = list(self.db.orders.find(filter_query, projection).sort("createdAt", DESCENDING))
         application_counts = self.get_application_counts_by_order()
@@ -619,44 +649,65 @@ class MongoStore:
         candidate_total = self.db.candidates.count_documents({})
         total_candidates = application_total or candidate_total
 
-        application_docs = list(self.db.applications.find().sort("createdAt", DESCENDING))
-        candidate_lookup = self.get_docs_by_id("candidates", [app.get("candidateId") for app in application_docs])
-        ctv_lookup = self.get_docs_by_id("ctvs", [app.get("ctvId") for app in application_docs])
         candidates = {stage: [] for stage in ["Chờ PV", "Chờ về cty", "Hoàn thành"]}
-        for app in application_docs:
-            stage = app.get("stage") if app.get("stage") in candidates else "Chờ PV"
-            candidate = candidate_lookup.get(app.get("candidateId"), {})
-            ctv = ctv_lookup.get(app.get("ctvId"), {})
-            candidates[stage].append({
-                "name": candidate.get("fullName", "Chưa có tên"),
-                "role": app.get("role") or candidate.get("role") or "Ứng viên",
-                "source": ctv.get("fullName") or app.get("sourceNote") or "Chưa có nguồn",
-            })
-        if application_total == 0 and candidate_total > 0:
-            stage_lookup["Chờ PV"] = candidate_total
-            for candidate in self.db.candidates.find().sort("createdAt", DESCENDING):
-                candidates["Chờ PV"].append({
-                    "name": candidate.get("fullName", "Chưa có tên"),
-                    "role": candidate.get("role", "Ứng viên"),
-                    "source": "Chưa gắn đơn/CTV",
-                })
-
-        collaborator_stats = self.get_application_stats_by_ctv()
         collaborators = []
-        for ctv in self.db.ctvs.find().sort("createdAt", DESCENDING).limit(6):
-            stats = collaborator_stats.get(ctv["_id"], {"sent": 0, "passed": 0})
-            sent_count = stats["sent"]
-            pass_count = stats["passed"]
-            collaborators.append({
-                "initials": ctv.get("initials", ""),
-                "name": ctv.get("fullName", ""),
-                "meta": f"{sent_count} ứng viên gửi",
-                "result": f"{pass_count} pass",
-                "badge": badge_for_result(pass_count),
-            })
+        if include_heavy:
+            application_docs = list(self.db.applications.find().sort("createdAt", DESCENDING))
+            candidate_lookup = self.get_docs_by_id("candidates", [app.get("candidateId") for app in application_docs])
+            ctv_lookup = self.get_docs_by_id("ctvs", [app.get("ctvId") for app in application_docs])
+            for app in application_docs:
+                stage = app.get("stage") if app.get("stage") in candidates else "Chờ PV"
+                candidate = candidate_lookup.get(app.get("candidateId"), {})
+                ctv = ctv_lookup.get(app.get("ctvId"), {})
+                candidates[stage].append({
+                    "name": candidate.get("fullName", "Chưa có tên"),
+                    "role": app.get("role") or candidate.get("role") or "Ứng viên",
+                    "source": ctv.get("fullName") or app.get("sourceNote") or "Chưa có nguồn",
+                })
+            if application_total == 0 and candidate_total > 0:
+                stage_lookup["Chờ PV"] = candidate_total
+                for candidate in self.db.candidates.find().sort("createdAt", DESCENDING):
+                    candidates["Chờ PV"].append({
+                        "name": candidate.get("fullName", "Chưa có tên"),
+                        "role": candidate.get("role", "Ứng viên"),
+                        "source": "Chưa gắn đơn/CTV",
+                    })
+
+            collaborator_stats = self.get_application_stats_by_ctv()
+            for ctv in self.db.ctvs.find().sort("createdAt", DESCENDING).limit(6):
+                stats = collaborator_stats.get(ctv["_id"], {"sent": 0, "passed": 0})
+                sent_count = stats["sent"]
+                pass_count = stats["passed"]
+                collaborators.append({
+                    "initials": ctv.get("initials", ""),
+                    "name": ctv.get("fullName", ""),
+                    "meta": f"{sent_count} ứng viên gửi",
+                    "result": f"{pass_count} pass",
+                    "badge": badge_for_result(pass_count),
+                })
 
         active_collaborators = self.db.ctvs.count_documents({"status": {"$ne": "Ngừng hoạt động"}})
         return build_dashboard_response(orders, stage_lookup, total_candidates, collaborators, candidates, active_collaborators, candidate_total)
+
+    def get_metrics(self):
+        stage_lookup = {stage: 0 for stage in ["Chờ PV", "Chờ về cty", "Hoàn thành"]}
+        for row in self.db.applications.aggregate([{"$group": {"_id": "$stage", "total": {"$sum": 1}}}]):
+            stage_lookup[row["_id"] or "Chờ PV"] = row["total"]
+        candidate_total = self.db.candidates.count_documents({})
+        application_total = sum(stage_lookup.values())
+        total_candidates = application_total or candidate_total
+        return {
+            "ok": True,
+            "metrics": {
+                "openOrders": self.db.orders.count_documents({"status": {"$ne": "Đã đóng"}}),
+                "urgentOrders": self.db.orders.count_documents({"status": "Gấp"}),
+                "newCandidates": candidate_total,
+                "interviewing": stage_lookup.get("Chờ về cty", 0),
+                "activeCollaborators": self.db.ctvs.count_documents({"status": {"$ne": "Ngừng hoạt động"}}),
+                "filledRate": round((stage_lookup.get("Hoàn thành", 0) / total_candidates) * 100) if total_candidates else 0,
+                "totalCandidates": total_candidates,
+            },
+        }
 
     def create_order(self, data):
         payload = normalize_order_payload(data)
@@ -681,7 +732,21 @@ class MongoStore:
         return {"ok": True, "order": self.order_to_api(order)}
 
     def update_order(self, original_code, data):
-        result = self.db.orders.update_one({"code": original_code}, {"$set": normalize_order_payload(data)})
+        existing = self.db.orders.find_one({"code": original_code})
+        if not existing:
+            raise ValueError("Không tìm thấy đơn cần cập nhật.")
+        payload = normalize_order_payload(data)
+        if not payload.get("imageDataUrl") and existing.get("imageDataUrl"):
+            payload["imageDataUrl"] = existing.get("imageDataUrl")
+            payload["hasImage"] = True
+            payload["hasImageData"] = bool(existing.get("hasImageData"))
+        if not payload.get("textUpFb") and existing.get("textUpFb"):
+            payload["textUpFb"] = existing.get("textUpFb")
+        if len(payload.get("jobJson") or {}) <= 3 and existing.get("jobJson"):
+            merged_job_json = dict(existing.get("jobJson") or {})
+            merged_job_json.update(payload.get("jobJson") or {})
+            payload["jobJson"] = merged_job_json
+        result = self.db.orders.update_one({"code": original_code}, {"$set": payload})
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy đơn cần cập nhật.")
         return {"ok": True}
@@ -704,7 +769,7 @@ class MongoStore:
                 "address": item.get("address", ""),
                 "zaloLink": item.get("zaloLink") or item.get("zaloUrl") or item.get("zalo") or "",
                 "groupLink": item.get("groupLink") or item.get("groupUrl") or item.get("facebookGroup") or item.get("sourceLink") or "",
-                "cvDataUrl": item.get("cvDataUrl") or "",
+                "hasCv": bool(item.get("cvDataUrl") or item.get("cvLink") or item.get("cvUrl") or item.get("resumeLink") or item.get("resumeUrl") or item.get("profileLink") or item.get("profileUrl") or item.get("fileUrl")),
                 "cvFileName": item.get("cvFileName") or "",
                 "cvLink": item.get("cvLink") or item.get("cvUrl") or item.get("resumeLink") or item.get("resumeUrl") or item.get("profileLink") or item.get("profileUrl") or item.get("fileUrl") or "",
                 "role": item.get("role", "Ứng viên"),
@@ -728,6 +793,9 @@ class MongoStore:
         object_id = mongo_id(candidate_id)
         payload = normalize_candidate_payload(data)
         self.assert_candidate_unique(payload, candidate_id)
+        if payload.get("cvDataUrl") == "__KEEP_EXISTING_CV__":
+            payload.pop("cvDataUrl", None)
+            payload.pop("cvFileName", None)
         update = {"$set": payload}
         unset_fields = {}
         if not payload.get("phoneKey"):
@@ -812,9 +880,9 @@ class MongoStore:
     def list_applications(self):
         applications = []
         application_docs = list(self.db.applications.find().sort("createdAt", DESCENDING))
-        order_lookup = self.get_docs_by_id("orders", [item.get("orderId") for item in application_docs])
-        candidate_lookup = self.get_docs_by_id("candidates", [item.get("candidateId") for item in application_docs])
-        ctv_lookup = self.get_docs_by_id("ctvs", [item.get("ctvId") for item in application_docs])
+        order_lookup = self.get_docs_by_id("orders", [item.get("orderId") for item in application_docs], {"code": 1, "title": 1})
+        candidate_lookup = self.get_docs_by_id("candidates", [item.get("candidateId") for item in application_docs], {"fullName": 1})
+        ctv_lookup = self.get_docs_by_id("ctvs", [item.get("ctvId") for item in application_docs], {"fullName": 1, "zaloLink": 1, "phone": 1})
         for item in application_docs:
             order = order_lookup.get(item.get("orderId"), {})
             candidate = candidate_lookup.get(item.get("candidateId"), {})
@@ -912,6 +980,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/dashboard":
             cached = get_cached_response("dashboard", parsed.query)
             self.send_json(cached or set_cached_response("dashboard", store.get_dashboard_data(query, False), parsed.query))
+            return
+        if parsed.path == "/api/metrics":
+            cached = get_cached_response("metrics")
+            self.send_json(cached or set_cached_response("metrics", store.get_metrics()))
             return
         if parsed.path == "/api/order-detail":
             code = query.get("code", [""])[0]

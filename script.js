@@ -226,6 +226,7 @@ function buildOrderEditSnapshot(payload) {
     location: payload.location,
     salaryText: payload.salaryText,
     housing: payload.housing,
+    requirement: payload.requirement,
     orderType: payload.orderType,
     headcount: payload.headcount,
     status: payload.status,
@@ -250,6 +251,15 @@ async function loadDashboard() {
     }
 
     return response.json();
+  });
+}
+
+async function loadMetrics() {
+  return loadCachedApi("metrics", async () => {
+    const response = await fetch("/api/metrics");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || "Không thể tải chỉ số dashboard");
+    return data.metrics;
   });
 }
 
@@ -781,6 +791,7 @@ function getCreateOrderFormData() {
   jobData.location = data.location || jobData.location || "Chưa rõ";
   jobData.salaryText = data.salaryText || jobData.salaryText || "Liên hệ";
   jobData.housing = data.housing || jobData.housing || "";
+  jobData.requirement = data.requirement || jobData.requirement || "Liên hệ";
   jobData.orderType = data.orderType || jobData.orderType || "Tokutei";
   jobData.quantity = Number(data.headcount || 0) || jobData.quantity || "";
   jobData.source = {
@@ -831,7 +842,7 @@ function buildJobDataFromForm(data) {
     insurance: "",
     workingHours: "",
     benefit: "",
-    requirement: "Liên hệ",
+    requirement: data.requirement || "Liên hệ",
     japaneseLevel: "",
     salaryNumber: "",
     salaryPeriod: "",
@@ -864,6 +875,7 @@ function setCreateOrderFields(data) {
   if (data.location) form.elements.location.value = data.location;
   if (data.salaryText) form.elements.salaryText.value = data.salaryText;
   if (data.housing) form.elements.housing.value = data.housing;
+  if (data.requirement) form.elements.requirement.value = data.requirement;
   if (data.orderType) form.elements.orderType.value = data.orderType;
   if (data.headcount) form.elements.headcount.value = data.headcount;
   updateCreatePreview();
@@ -885,7 +897,7 @@ function updateCreatePreview(parsedJobData) {
     insurance: "",
     workingHours: "",
     benefit: "",
-    requirement: "Liên hệ",
+    requirement: data.requirement || "Liên hệ",
     japaneseLevel: "",
     salaryNumber: "",
     salaryPeriod: "",
@@ -935,16 +947,16 @@ function updateActiveCollaboratorsMetric(count) {
 }
 
 function getVisibleOrders(orders) {
-  const search = document.getElementById("orderSearch")?.value.trim().toLowerCase() || "";
+  const search = normalizeSearchText(document.getElementById("orderSearch")?.value || "");
   const sortBy = document.getElementById("orderSortBy")?.value || "createdAt";
   const direction = document.getElementById("orderSortDirection")?.value || "desc";
 
   return [...orders]
     .filter((order) => {
       if (!search) return true;
-      return [order.code, order.title, order.department, getOrderLocation(order), order.status, order.postingStatus]
+      return [order.code, order.title, order.department, getOrderType(order), getOrderLocation(order), order.status, order.postingStatus]
         .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(search));
+        .some((value) => normalizeSearchText(value).includes(search));
     })
     .sort((a, b) => {
       let first = "";
@@ -972,7 +984,7 @@ function updateOrderSearchOptions(orders) {
 
   const options = new Set();
   orders.forEach((order) => {
-    [order.code, order.title, order.department, getOrderLocation(order)].filter(Boolean).forEach((value) => options.add(value));
+    [order.code, order.title, order.department, getOrderType(order), getOrderLocation(order)].filter(Boolean).forEach((value) => options.add(value));
     getOrderIndustries(order).forEach((industry) => options.add(industry));
   });
 
@@ -1011,7 +1023,7 @@ function getOrderIndustries(order) {
 
   if (/khach san|ve sinh|vstn|don dep/.test(combined)) addIndustry("Khách sạn");
   if (/\bpc1\b/.test(combined) && /han|han xi/.test(combined)) addIndustry("Xây dựng");
-  if (/agt|xay dung|cot thep|gian giao|be tong|cong truong|cong trinh|giai the|ky su quan ly cong trinh|ks qly cong trinh/.test(combined)) addIndustry("Xây dựng");
+  if (/xay dung|cot thep|gian giao|be tong|cong truong|cong trinh|giai the|ky su quan ly cong trinh|ks qly cong trinh/.test(combined)) addIndustry("Xây dựng");
   if (/han|co khi|san xuat|factory|may/.test(combined)) addIndustry("Cơ khí/Sản xuất");
   if (/thuc pham|che bien|food|nong nghiep/.test(combined)) addIndustry("Thực phẩm");
   if (!industries.length) addIndustry(cleanIndustryLabel(rawIndustry || "Chưa có ngành"));
@@ -1022,7 +1034,7 @@ function getOrderIndustries(order) {
 function getIndustryTagClass(industry) {
   const value = normalizeSearchText(industry);
   if (/cot thep|thi cong cot thep/.test(value)) return "steel";
-  if (/agt|xay dung|gian giao|be tong|cong truong|cong trinh|giai the/.test(value)) return "construction";
+  if (/xay dung|gian giao|be tong|cong truong|cong trinh|giai the/.test(value)) return "construction";
   if (/khach san|ve sinh|vstn|don dep/.test(value)) return "hotel";
   if (/han|co khi|san xuat|factory|may/.test(value)) return "factory";
   if (/thuc pham|che bien|food|nong nghiep/.test(value)) return "food";
@@ -1436,6 +1448,7 @@ function getCandidateGroupLink(candidate, application) {
 
 function getCandidateCvLink(candidate, application) {
   const value = application?.cvDataUrl || application?.cvLink || application?.resumeLink || application?.profileLink || application?.fileUrl || getCandidateLink(candidate, ["cvDataUrl", "cvLink", "cvUrl", "resumeLink", "resumeUrl", "profileLink", "profileUrl", "fileUrl"]);
+  if (candidate?.hasCv && candidate?.id) return `/api/candidates/${encodeURIComponent(candidate.id)}/cv`;
   if (!value) return "";
   if (candidate?.cvDataUrl && candidate?.id) return `/api/candidates/${encodeURIComponent(candidate.id)}/cv`;
   if (/^(data:|blob:)/i.test(value)) return value;
@@ -1975,12 +1988,14 @@ async function renderActiveSection() {
 async function refreshDashboard() {
   try {
     if (activeSection === "collaborators") {
-      const [data, ctvs] = await Promise.all([loadDashboard(), loadCtvs()]);
-      currentOrders = data.orders;
+      const ctvs = await loadCtvs();
       currentCtvs = ctvs;
       ctvsLoaded = true;
-      renderMetrics(data.metrics);
       renderCtvTable(currentCtvs);
+      loadMetrics()
+        .then(renderMetrics)
+        .then(() => updateActiveCollaboratorsMetric(currentCtvs.length))
+        .catch(console.error);
       return;
     }
 
@@ -2424,6 +2439,7 @@ function reopenOrder(order, options = {}) {
   form.elements.location.value = fallbackJobData.location !== "Chưa rõ" ? fallbackJobData.location : "";
   form.elements.salaryText.value = fallbackJobData.salaryText !== "Liên hệ" ? fallbackJobData.salaryText : "";
   form.elements.housing.value = fallbackJobData.housing || "";
+  form.elements.requirement.value = fallbackJobData.requirement !== "Liên hệ" ? fallbackJobData.requirement : "";
   form.elements.orderType.value = fallbackJobData.orderType || "Tokutei";
   form.elements.headcount.value = order.headcount || 1;
   form.elements.status.value = order.status || "Chờ duyệt";
@@ -2460,7 +2476,7 @@ function readJsonValue(value, key) {
 function buildJobDataFromOrder(order) {
   const formIndustries = splitIndustries(order.department || order.industry || "");
   const savedLocation = order.location || readJsonValue(order.jobJson, "location");
-  const savedRequirement = readJsonValue(order.jobJson, "requirement");
+  const savedRequirement = order.requirement || readJsonValue(order.jobJson, "requirement");
   const savedSalary = order.salaryText || readJsonValue(order.jobJson, "salary_text");
   const savedHousing = order.housing || readJsonValue(order.jobJson, "housing");
   const savedOrderType = order.orderType || readJsonValue(order.jobJson, "order_type");
@@ -2496,12 +2512,13 @@ function buildJobDataFromOrder(order) {
 
 function buildRawTextFromOrder(order) {
   const jobData = buildJobDataFromOrder(order);
-  const salaryLine = jobData.salaryText && jobData.salaryText !== "Liên hệ" ? `LCB: ${jobData.salaryText}` : "LCB";
-  const housingLine = jobData.housing ? `NHÀ: ${jobData.housing}` : "NHÀ";
-  const requirementLine = jobData.requirement && jobData.requirement !== "Liên hệ" ? `Yc: ${jobData.requirement}` : "Yc:";
+  const jobTitle = stripEmoji(jobData.jobTitle).replace(/^\s*(?:SOS|🆘)\s*/i, "").trim() || "Đơn tuyển";
+  const salaryLine = jobData.salaryText && jobData.salaryText !== "Liên hệ" ? `💰 LCB: ${jobData.salaryText}` : "💰 LCB";
+  const housingLine = jobData.housing ? `🏡 NHÀ: ${jobData.housing}` : "🏡 NHÀ";
+  const requirementLine = jobData.requirement && jobData.requirement !== "Liên hệ" ? `💢 Yc: ${jobData.requirement}` : "💢 Yc:";
   return [
-    `🆘 ${jobData.jobTitle} - ${jobData.orderCode}`,
-    jobData.location !== "Chưa rõ" ? `Khu vực: ${jobData.location}` : "",
+    `🆘 ${jobTitle} - ${jobData.orderCode}`,
+    jobData.location !== "Chưa rõ" ? jobData.location : "",
     salaryLine,
     housingLine,
     requirementLine,
@@ -2544,10 +2561,6 @@ function bindCreateOrderModal() {
     resetCreateOrderForm();
   });
 
-  document.getElementById("rawOrderText").addEventListener("input", () => {
-    orderInputSource = "text";
-  });
-
   document.getElementById("copyPreviewTextButton").addEventListener("click", async () => {
     const text = document.getElementById("facebookPreviewText").innerText.trim();
     if (!text) return;
@@ -2575,11 +2588,9 @@ function bindCreateOrderModal() {
 
   form.querySelectorAll("input, select, textarea").forEach((field) => {
     field.addEventListener("input", () => {
-      if (field.id !== "rawOrderText") orderInputSource = "form";
       updateCreatePreview();
     });
     field.addEventListener("change", () => {
-      if (field.id !== "rawOrderText") orderInputSource = "form";
       updateCreatePreview();
     });
   });
@@ -2715,7 +2726,7 @@ async function openEditCandidateModal(candidateId) {
   form.elements.phone.value = candidate.phone || "";
   form.elements.email.value = candidate.email || "";
   form.elements.groupLink.value = getCandidateGroupLink(candidate, application) || "";
-  form.elements.cvDataUrl.value = candidate.cvDataUrl || candidate.cvLink || "";
+  form.elements.cvDataUrl.value = candidate.cvDataUrl || (candidate.hasCv ? "__KEEP_EXISTING_CV__" : candidate.cvLink || "");
   form.elements.cvFileName.value = candidate.cvFileName || "";
   setCandidateCvStatus(candidate.cvFileName ? `Đã chọn file ${candidate.cvFileName}` : (getCandidateCvLink(candidate, application) ? "Đã có CV." : ""));
   form.elements.stage.value = status;
