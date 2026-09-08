@@ -553,10 +553,10 @@ select {
 
 .order-info {
   grid-area: meta;
-  display: flex;
-  gap: 8px 12px;
+  display: grid;
+  grid-template-columns: 118px minmax(148px, 176px) 104px max-content 76px;
+  gap: 8px 10px;
   align-items: center;
-  flex-wrap: wrap;
   min-width: 0;
 }
 
@@ -579,15 +579,17 @@ select {
 
 .meta-line {
   display: flex;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
   min-width: 0;
-  font-size: 12px;
+  width: 100%;
+  font-size: 11px;
+  font-weight: 800;
   color: #4b5563;
 }
 
 .meta-line b {
-  color: #6b7280;
+  color: #9ca3af;
   font-size: 11px;
   text-transform: uppercase;
 }
@@ -601,53 +603,172 @@ select {
 }
 
 .industry-tag {
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
   border-radius: 999px;
-  padding: 5px 9px;
+  padding: 6px 10px;
   font-size: 12px;
   font-weight: 900;
   line-height: 1;
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.industry-tag,
 .industry-tag.construction {
   background: #dbeafe;
   color: #1d4ed8;
 }
 
 .industry-tag.steel {
-  background: #e2e8f0;
-  color: #334155;
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
 .industry-tag.hotel {
-  background: #fce7f3;
-  color: #be185d;
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
 .industry-tag.factory {
-  background: #fef3c7;
-  color: #92400e;
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
 .industry-tag.food {
-  background: #ffedd5;
-  color: #c2410c;
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
 .industry-tag.default {
-  background: #e5e7eb;
-  color: #374151;
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.location-tag {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.location-tag > span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.location-tag:hover,
+.location-tag:focus-visible {
+  z-index: 20;
+}
+
+.location-tag::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 9px);
+  width: max-content;
+  max-width: min(280px, 72vw);
+  transform: translateX(-50%);
+  padding: 10px 12px;
+  border-radius: 3px;
+  background: #111827;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, .25);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.location-tag::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 3px);
+  transform: translateX(-50%);
+  border: 7px solid transparent;
+  border-bottom: 0;
+  border-top-color: #111827;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.location-tag:hover::after,
+.location-tag:hover::before,
+.location-tag:focus-visible::after,
+.location-tag:focus-visible::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+.order-type-tag {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .badges {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
+}
+
+.badges .badge {
+  width: 100%;
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.badges .image-badge-button {
+  cursor: pointer;
+}
+
+.badges .image-badge-button:hover {
+  filter: brightness(.97);
+}
+
+.badges .image-badge-button:disabled {
+  cursor: wait;
+  opacity: .75;
 }
 
 .badge.ok {
@@ -776,6 +897,13 @@ select {
   text-align: left;
 }
 
+.candidate-cv-button {
+  min-height: 30px;
+  padding: 4px 6px;
+  position: relative;
+  z-index: 1;
+}
+
 .table-link:hover {
   text-decoration: underline;
 }
@@ -901,11 +1029,11 @@ select {
 
 .candidate-table .clean-table-head,
 .candidate-table .clean-table-row {
-  grid-template-columns: 38px minmax(170px, 1.2fr) minmax(72px, .45fr) minmax(120px, .75fr) minmax(118px, .72fr) minmax(150px, .9fr) minmax(92px, .55fr) minmax(84px, .48fr) minmax(64px, .38fr);
+  grid-template-columns: 38px minmax(160px, 1.15fr) minmax(72px, .42fr) minmax(118px, .68fr) minmax(112px, .62fr) minmax(140px, .78fr) minmax(72px, .38fr) minmax(92px, .5fr) minmax(80px, .42fr) minmax(64px, .34fr);
 }
 
 .candidate-table {
-  min-width: 1180px;
+  min-width: 1240px;
 }
 
 .row-icon-button {
@@ -953,6 +1081,7 @@ select {
 .candidate-order-cell,
 .candidate-industry-cell,
 .candidate-group-cell,
+.candidate-cv-cell,
 .candidate-ctv-cell {
   display: grid;
   gap: 5px;
@@ -1286,6 +1415,60 @@ select {
   grid-column: 1 / -1;
 }
 
+.visually-hidden-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.cv-upload-dropzone {
+  width: 100%;
+  min-height: 108px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  border: 1px dashed #9aa6b2;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+}
+
+.cv-upload-dropzone svg {
+  width: 30px;
+  height: 30px;
+  color: #0f766e;
+}
+
+.cv-upload-dropzone strong {
+  font-size: 14px;
+}
+
+.cv-upload-dropzone small {
+  color: #66727e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cv-upload-dropzone:hover,
+.cv-upload-dropzone.is-dragging {
+  border-color: #0f766e;
+  background: #ecfdf5;
+}
+
+.field-hint {
+  color: #66727e;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.field-hint.error {
+  color: #b91c1c;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1430,7 +1613,7 @@ select {
 }
 
 .detail-modal-panel {
-  width: min(1010px, calc(100vw - 28px));
+  width: min(720px, calc(100vw - 28px));
   max-height: calc(100vh - 36px);
   overflow: auto;
   background: #ffffff;
@@ -1470,8 +1653,9 @@ select {
 
 .order-detail {
   display: grid;
-  grid-template-columns: minmax(190px, .7fr) minmax(260px, .95fr) minmax(320px, 1.25fr);
-  gap: 12px;
+  grid-template-columns: minmax(240px, 280px) minmax(300px, 1fr);
+  gap: 14px;
+  align-items: stretch;
 }
 
 .order-detail:has(.ctv-detail-list) {
@@ -1632,6 +1816,60 @@ select {
   padding: 8px;
 }
 
+.cv-viewer-dialog {
+  width: min(980px, calc(100vw - 28px));
+  height: min(760px, calc(100vh - 28px));
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.cv-viewer-dialog::backdrop {
+  background: rgba(15, 23, 42, .58);
+}
+
+.cv-viewer-card {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.cv-viewer-head {
+  position: relative;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  padding: 12px 56px 12px 16px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.cv-viewer-body {
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  background: #f8fafc;
+}
+
+.cv-viewer-body iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.cv-viewer-body img {
+  width: auto;
+  height: auto;
+  max-width: min(520px, 78%);
+  max-height: 72%;
+  object-fit: contain;
+  padding: 12px;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, .14);
+}
+
 .lightbox-close-button {
   position: absolute;
   top: 18px;
@@ -1772,7 +2010,8 @@ button:disabled {
     grid-template-areas:
       "edit name status"
       "edit order ctv"
-      "edit industry group"
+      "edit industry cv"
+      "edit group group"
       "edit date delete";
     gap: 8px 12px;
     align-items: start;
@@ -1837,6 +2076,12 @@ button:disabled {
     text-align: right;
   }
 
+  .candidate-cv-cell {
+    grid-area: cv;
+    justify-self: end;
+    text-align: right;
+  }
+
   .candidate-date-cell {
     grid-area: date;
     justify-self: end;
@@ -1876,6 +2121,7 @@ button:disabled {
   .candidate-order-cell,
   .candidate-industry-cell,
   .candidate-group-cell,
+  .candidate-cv-cell,
   .candidate-ctv-cell {
     min-width: 0;
   }
@@ -1910,6 +2156,7 @@ button:disabled {
       "edit order"
       "edit industry"
       "edit ctv"
+      "edit cv"
       "edit group"
       "edit date"
       "edit delete";
@@ -1917,6 +2164,7 @@ button:disabled {
 
   .candidate-status-cell,
   .candidate-ctv-cell,
+  .candidate-cv-cell,
   .candidate-group-cell,
   .candidate-date-cell,
   .candidate-delete-cell {
@@ -2022,6 +2270,19 @@ button:disabled {
   .order-main strong,
   .meta-line span {
     white-space: normal;
+  }
+
+  .order-info {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: 8px;
+  }
+
+  .meta-line {
+    justify-content: flex-start;
+  }
+
+  .badges {
+    width: 76px;
   }
 
   .order-actions {

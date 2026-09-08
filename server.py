@@ -1,4 +1,5 @@
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import base64
 import json
 import os
 import re
@@ -7,7 +8,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from bson import ObjectId
 from dotenv import load_dotenv
@@ -281,6 +282,9 @@ def normalize_candidate_payload(data):
         "address": data.get("address", ""),
         "zaloLink": zalo_link,
         "groupLink": data.get("groupLink") or data.get("groupUrl") or data.get("facebookGroup") or data.get("sourceLink") or "",
+        "cvDataUrl": data.get("cvDataUrl") or "",
+        "cvFileName": data.get("cvFileName") or "",
+        "cvLink": data.get("cvLink") or data.get("cvUrl") or data.get("resumeLink") or data.get("resumeUrl") or data.get("profileLink") or data.get("profileUrl") or data.get("fileUrl") or "",
         "role": data.get("role", "Ứng viên"),
         "stage": data.get("stage", "Chờ PV"),
         "status": data.get("status", "Đang hoạt động"),
@@ -700,6 +704,9 @@ class MongoStore:
                 "address": item.get("address", ""),
                 "zaloLink": item.get("zaloLink") or item.get("zaloUrl") or item.get("zalo") or "",
                 "groupLink": item.get("groupLink") or item.get("groupUrl") or item.get("facebookGroup") or item.get("sourceLink") or "",
+                "cvDataUrl": item.get("cvDataUrl") or "",
+                "cvFileName": item.get("cvFileName") or "",
+                "cvLink": item.get("cvLink") or item.get("cvUrl") or item.get("resumeLink") or item.get("resumeUrl") or item.get("profileLink") or item.get("profileUrl") or item.get("fileUrl") or "",
                 "role": item.get("role", "Ứng viên"),
                 "stage": item.get("stage", "Chờ PV"),
                 "status": item.get("status", ""),
@@ -735,6 +742,26 @@ class MongoStore:
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy ứng viên.")
         return {"ok": True}
+
+    def get_candidate_cv(self, candidate_id):
+        item = self.db.candidates.find_one({"_id": mongo_id(candidate_id)}, {"cvDataUrl": 1, "cvFileName": 1, "cvLink": 1})
+        if not item:
+            raise ValueError("Không tìm thấy ứng viên.")
+        data_url = item.get("cvDataUrl") or ""
+        match = re.match(r"^data:([^;,]+)?(;base64)?,(.*)$", data_url)
+        if not match:
+            raise ValueError("Ứng viên chưa có file CV.")
+        mime_type = match.group(1) or "application/octet-stream"
+        raw_data = match.group(3) or ""
+        try:
+            payload = base64.b64decode(raw_data) if match.group(2) else unquote(raw_data).encode("utf-8")
+        except Exception as error:
+            raise ValueError("File CV không hợp lệ.") from error
+        return {
+            "payload": payload,
+            "mimeType": mime_type,
+            "fileName": item.get("cvFileName") or "cv",
+        }
 
     def delete_candidate(self, candidate_id):
         result = self.db.candidates.delete_one({"_id": mongo_id(candidate_id)})
@@ -857,6 +884,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def send_binary(self, payload, mime_type, file_name="file"):
+        self.send_response(200)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{quote(file_name)}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
     def read_json_body(self):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length).decode("utf-8")
@@ -901,6 +937,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/candidates":
             cached = get_cached_response("candidates")
             self.send_json(cached or set_cached_response("candidates", store.list_candidates()))
+            return
+        if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/cv"):
+            item_id = unquote(parsed.path.removeprefix("/api/candidates/").removesuffix("/cv"))
+            try:
+                cv = store.get_candidate_cv(item_id)
+                self.send_binary(cv["payload"], cv["mimeType"], cv["fileName"])
+            except ValueError as error:
+                self.send_json({"ok": False, "message": str(error)}, 404)
             return
         if parsed.path == "/api/ctvs":
             cached = get_cached_response("ctvs")

@@ -7,9 +7,9 @@
     <script>
       document.documentElement.dataset.activeSection = localStorage.getItem("activeDashboardSection") || "orders";
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20260907-phone-digits" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-two-way-parse" />
     <script defer src="https://unpkg.com/lucide@latest"></script>
-    <script defer src="./script.js?v=20260907-phone-digits"></script>
+    <script defer src="./script.js?v=20260908-two-way-parse"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -133,6 +133,8 @@
                         <span>Đơn / ngành</span>
                         <span>Trạng thái</span>
                         <span>CTV</span>
+                        <span>CV</span>
+                        <span>Link nhóm</span>
                         <span>Ngày</span>
                       </div>
                       <div class="clean-table-empty"><strong>Đang tải dữ liệu...</strong></div>
@@ -226,6 +228,22 @@
                   <input name="location" type="text" placeholder="VD: Fukui" />
                 </label>
                 <label>
+                  <span>Lương</span>
+                  <input name="salaryText" type="text" placeholder="VD: 275,000 yên/tháng" />
+                </label>
+                <label>
+                  <span>Nhà</span>
+                  <input name="housing" type="text" placeholder="VD: KTX 20,000 yên" />
+                </label>
+                <label>
+                  <span>Loại đơn</span>
+                  <select name="orderType">
+                    <option>Tokutei</option>
+                    <option>Kỹ sư</option>
+                    <option>Tokutei/Kỹ sư</option>
+                  </select>
+                </label>
+                <label>
                   <span>Số lượng cần tuyển</span>
                   <input name="headcount" type="number" min="0" value="1" required />
                 </label>
@@ -239,11 +257,6 @@
                   </select>
                 </label>
               </div>
-            </section>
-
-            <section class="create-panel">
-              <h3>JSON lưu database/chatbot</h3>
-              <pre id="createOrderJson" class="json-preview">{}</pre>
             </section>
 
             <section class="create-panel preview-panel">
@@ -328,6 +341,18 @@
           <label>
             <span>Link nhóm</span>
             <input name="groupLink" type="url" placeholder="https://..." />
+          </label>
+          <label class="modal-field-wide cv-upload-field">
+            <span>CV</span>
+            <button id="candidateCvDropzone" class="cv-upload-dropzone" type="button">
+              <i data-lucide="file-plus-2" aria-hidden="true"></i>
+              <strong>Upload CV</strong>
+              <small>Bấm để chọn hoặc kéo file vào đây</small>
+            </button>
+            <input id="candidateCvFile" class="visually-hidden-file" type="file" accept="application/pdf,.pdf,image/*" />
+            <input id="candidateCvDataUrl" name="cvDataUrl" type="hidden" />
+            <input id="candidateCvFileName" name="cvFileName" type="hidden" />
+            <span id="candidateCvStatus" class="field-hint" aria-live="polite"></span>
           </label>
         </div>
 
@@ -463,6 +488,16 @@
       <div class="image-lightbox-card">
         <button id="closeImageLightbox" class="lightbox-close-button" type="button" aria-label="Đóng">×</button>
         <img id="lightboxImage" alt="Ảnh đơn phóng to" />
+      </div>
+    </dialog>
+
+    <dialog id="candidateCvDialog" class="cv-viewer-dialog">
+      <div class="cv-viewer-card">
+        <div class="cv-viewer-head">
+          <strong id="candidateCvTitle">CV ứng viên</strong>
+          <button id="closeCandidateCv" class="lightbox-close-button inline-close-button" type="button" aria-label="Đóng">×</button>
+        </div>
+        <div id="candidateCvViewer" class="cv-viewer-body"></div>
       </div>
     </dialog>
   </body>

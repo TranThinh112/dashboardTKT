@@ -32,6 +32,7 @@ let sectionRenderToken = 0;
 let candidatesLoaded = false;
 let ctvsLoaded = false;
 let activeInterviewApplicationId = "";
+let activeCvObjectUrl = "";
 const API_CACHE_TTL = 20000;
 const ORDER_DETAIL_CACHE_PREFIX = "orderDetail:";
 const apiCache = new Map();
@@ -223,6 +224,9 @@ function buildOrderEditSnapshot(payload) {
     industry: payload.industry,
     industries: Array.isArray(payload.industries) ? payload.industries.join("|") : payload.industries,
     location: payload.location,
+    salaryText: payload.salaryText,
+    housing: payload.housing,
+    orderType: payload.orderType,
     headcount: payload.headcount,
     status: payload.status,
     rawText: payload.rawText,
@@ -468,7 +472,13 @@ function normalizeText(text) {
 function stripEmoji(text) {
   return String(text || "")
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
+    .replace(/[\uFE0E\uFE0F]/g, "")
     .trim();
+}
+
+function stripLineLabel(text, labels) {
+  const labelPattern = labels.join("|");
+  return normalizeText(String(text || "").replace(new RegExp(`^(?:${labelPattern})\\s*[:\\-]?\\s*`, "i"), ""));
 }
 
 function findValue(text, patterns) {
@@ -512,15 +522,68 @@ function cleanIndustryLabel(value) {
     .replace(/\s+/g, " ")
     .trim();
   const normalized = normalizeSearchText(label);
-  if (/xay dung|cot thep|gian giao|cong trinh|be tong|cong truong/.test(normalized)) return "Xây dựng";
+  if (/xay dung|cot thep|gian giao|cong trinh|be tong|cong truong|chong tham|tkt/.test(normalized)) return "Xây dựng";
   if (/co khi|han|san xuat|factory|may/.test(normalized)) return "Cơ khí/Sản xuất";
   if (/khach san|ve sinh|vstn|don dep/.test(normalized)) return "Khách sạn";
   if (/thuc pham|che bien|food|nong nghiep/.test(normalized)) return "Thực phẩm";
   return label || "Chưa có ngành";
 }
 
+function parseCompactOrderText(raw) {
+  const lines = normalizeText(raw).split(/\r?\n/).map(stripEmoji).filter(Boolean);
+  if (lines.length < 2) return null;
+
+  const firstLine = lines[0].replace(/\s*\([^)]*\)\s*$/g, "").trim();
+  const firstMatch = firstLine.match(/^(.*?)\s*[-–]\s*([A-Za-z0-9._/-]+)\s*$/);
+  if (!firstMatch) return null;
+
+  const jobTitle = stripEmoji(firstMatch[1]);
+  const orderCode = normalizeText(firstMatch[2]);
+  const labeledLocation = findValue(raw, [/^Khu vực\s*:\s*([^\n]+)/im, /^Tỉnh\s*:\s*([^\n]+)/im, /^Địa điểm\s*:\s*([^\n]+)/im]);
+  const location = labeledLocation || stripLineLabel(lines[1], ["Khu vực", "Tỉnh", "Địa điểm"]);
+  const salaryText = lines.find((line) => /^LCB\b/i.test(line)) || "Liên hệ";
+  const housing = lines.find((line) => /^NHÀ\b/i.test(line)) || "";
+  const requirement = lines.find((line) => /^Yc\b|^Yêu cầu\b/i.test(line)) || "Liên hệ";
+  const quantityLine = lines.find((line) => /^SL\b|^Số lượng\b/i.test(line)) || "";
+  const quantityMatch = quantityLine.match(/\d+/);
+  const industries = splitIndustries(jobTitle);
+
+  return {
+    orderCode,
+    orderType: "Đơn tuyển",
+    industry: industries[0] || cleanIndustryLabel(jobTitle),
+    industries: industries.length ? industries : [cleanIndustryLabel(jobTitle)],
+    jobTitle,
+    location,
+    company: "",
+    salaryText,
+    allowance: "",
+    housing,
+    insurance: "",
+    workingHours: "",
+    benefit: "",
+    requirement,
+    japaneseLevel: "",
+    salaryNumber: "",
+    salaryPeriod: "",
+    interview: "Liên hệ",
+    quantity: quantityMatch ? Number(quantityMatch[0]) : "",
+    daysOff: "Liên hệ",
+    work: jobTitle,
+    back: "",
+    source: {
+      compact_text_used: true,
+      image_ocr_used: false,
+      pasted_text_used: Boolean(raw),
+    },
+  };
+}
+
 function parseRawTextByRules(raw) {
   raw = normalizeText(raw);
+  const compactOrder = parseCompactOrderText(raw);
+  if (compactOrder) return compactOrder;
+
   const lines = raw.split(/\r?\n/).map(stripEmoji).filter(Boolean);
   const title = lines[0] || "Đơn tuyển";
   const orderCode = findValue(raw, [/Mã đơn hàng\s*:\s*([^\n]+)/i, /Mã đơn\s*:\s*([^\n]+)/i]) || "Chưa có";
@@ -716,6 +779,9 @@ function getCreateOrderFormData() {
   jobData.industries = splitIndustries(data.department || jobData.industries || jobData.industry);
   jobData.industry = jobData.industries[0] || data.department || jobData.industry || "Đơn tuyển";
   jobData.location = data.location || jobData.location || "Chưa rõ";
+  jobData.salaryText = data.salaryText || jobData.salaryText || "Liên hệ";
+  jobData.housing = data.housing || jobData.housing || "";
+  jobData.orderType = data.orderType || jobData.orderType || "Tokutei";
   jobData.quantity = Number(data.headcount || 0) || jobData.quantity || "";
   jobData.source = {
     ...(jobData.source || {}),
@@ -753,15 +819,15 @@ function findTextValue(rawText, labels) {
 function buildJobDataFromForm(data) {
   return {
     orderCode: data.code || "Chưa có",
-    orderType: "Đơn tuyển",
+    orderType: data.orderType || "Tokutei",
     industry: splitIndustries(data.department)[0] || "Đơn tuyển",
     industries: splitIndustries(data.department),
     jobTitle: data.title || "Đơn tuyển",
     location: data.location || "Chưa rõ",
     company: "",
-    salaryText: "Liên hệ",
+    salaryText: data.salaryText || "Liên hệ",
     allowance: "",
-    housing: "",
+    housing: data.housing || "",
     insurance: "",
     workingHours: "",
     benefit: "",
@@ -782,18 +848,12 @@ function buildJobDataFromForm(data) {
 }
 
 function parseOrderText() {
-  const rawText = document.getElementById("rawOrderText").value.trim();
-  const jobData = parseRawTextByRules(rawText);
+  const rawTextElement = document.getElementById("rawOrderText");
+  const formData = Object.fromEntries(new FormData(document.getElementById("createOrderForm")).entries());
+  rawTextElement.value = buildRawTextFromOrder(formData);
   imageDataReady = document.getElementById("imagePasteBox").querySelector("img") !== null;
   updateCreateImageBadges();
-  setCreateOrderFields({
-    code: jobData.orderCode !== "Chưa có" ? jobData.orderCode : "",
-    title: jobData.jobTitle,
-    department: (jobData.industries && jobData.industries.length ? jobData.industries : [jobData.industry]).filter(Boolean).join(", "),
-    location: jobData.location !== "Chưa rõ" ? jobData.location : "",
-    headcount: jobData.quantity || 1,
-  });
-  updateCreatePreview(jobData);
+  updateCreatePreview();
 }
 
 function setCreateOrderFields(data) {
@@ -802,6 +862,9 @@ function setCreateOrderFields(data) {
   if (data.title) form.elements.title.value = data.title;
   if (data.department) form.elements.department.value = data.department;
   if (data.location) form.elements.location.value = data.location;
+  if (data.salaryText) form.elements.salaryText.value = data.salaryText;
+  if (data.housing) form.elements.housing.value = data.housing;
+  if (data.orderType) form.elements.orderType.value = data.orderType;
   if (data.headcount) form.elements.headcount.value = data.headcount;
   updateCreatePreview();
 }
@@ -810,15 +873,15 @@ function updateCreatePreview(parsedJobData) {
   const data = getCreateOrderFormData();
   const jobData = parsedJobData || {
     orderCode: data.code || "Chưa có",
-    orderType: "Đơn tuyển",
+    orderType: data.orderType || "Tokutei",
     industry: splitIndustries(data.department)[0] || "Đơn tuyển",
     industries: splitIndustries(data.department),
     jobTitle: data.title || "Đơn tuyển",
     location: data.location || "Chưa rõ",
     company: "",
-    salaryText: "Liên hệ",
+    salaryText: data.salaryText || "Liên hệ",
     allowance: "",
-    housing: "",
+    housing: data.housing || "",
     insurance: "",
     workingHours: "",
     benefit: "",
@@ -840,7 +903,8 @@ function updateCreatePreview(parsedJobData) {
 
   document.getElementById("previewOrderCode").textContent = `Mã đơn: ${data.code || "--"}`;
   document.getElementById("facebookPreviewText").innerHTML = escapeHtml(shortText || "Nhập hoặc tách dữ liệu để xem preview").replace(/\n/g, "<br>");
-  document.getElementById("createOrderJson").textContent = JSON.stringify(buildJobJson(jobData), null, 2);
+  const jsonPreview = document.getElementById("createOrderJson");
+  if (jsonPreview) jsonPreview.textContent = JSON.stringify(buildJobJson(jobData), null, 2);
 }
 
 function updateCreateImageBadges() {
@@ -977,6 +1041,10 @@ function getOrderLocation(order) {
   return order.location || readJsonValue(order.jobJson, "location") || "Chưa rõ";
 }
 
+function getOrderType(order) {
+  return order.orderType || readJsonValue(order.jobJson, "order_type") || "Tokutei";
+}
+
 function getOrderSearchLabel(order) {
   return `${order.code} - ${getOrderShortTitle(order)}`;
 }
@@ -1058,6 +1126,8 @@ function buildCandidateEditSnapshot(payload, selectedOrder, selectedCtv) {
     phone: payload.phone,
     email: payload.email,
     groupLink: payload.groupLink,
+    cvDataUrl: payload.cvDataUrl,
+    cvFileName: payload.cvFileName,
     stage: payload.stage,
     orderId: selectedOrder?.id || "",
     role: selectedOrder ? getOrderIndustryLabel(selectedOrder) : "",
@@ -1119,11 +1189,13 @@ function renderOrders(orders) {
                   .map((industry) => `<span class="industry-tag ${getIndustryTagClass(industry)}">${escapeHtml(industry)}</span>`)
                   .join("")}
               </span>
-              <span class="meta-line"><b>Tỉnh</b><span>${escapeHtml(getOrderLocation(order))}</span></span>
+              <span class="location-tag" data-tooltip="Tỉnh: ${escapeHtml(getOrderLocation(order))}"><span>Tỉnh: ${escapeHtml(getOrderLocation(order))}</span></span>
+              <span class="order-type-tag">${escapeHtml(getOrderType(order))}</span>
               <span class="meta-line"><b>Tạo</b><span>${escapeHtml(formatShortDateTime(order.createdAt))}</span></span>
               <span class="badges" aria-label="Trạng thái dữ liệu">
-                <span class="badge ${order.hasImage ? "ok" : "warn"}">${order.hasImage ? "Có ảnh" : "Không ảnh"}</span>
-                <span class="badge ${order.hasImageData ? "ok" : "bad"}">${order.hasImageData ? "Có data ảnh" : "Chưa có data ảnh"}</span>
+                ${order.hasImage
+                  ? `<button class="badge ok image-badge-button" type="button" data-order-image-code="${escapeHtml(order.code)}">Ảnh</button>`
+                  : `<span class="badge warn">Không ảnh</span>`}
               </span>
             </div>
           </div>
@@ -1200,6 +1272,27 @@ function renderOrders(orders) {
       } catch (error) {
         console.error(error);
         button.textContent = "Lỗi copy";
+        setTimeout(() => {
+          button.textContent = originalLabel;
+        }, 1200);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+  list.querySelectorAll("[data-order-image-code]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const order = currentOrders.find((item) => item.code === button.dataset.orderImageCode);
+      if (!order) return;
+      button.disabled = true;
+      const originalLabel = button.textContent;
+      try {
+        const detail = await ensureOrderDetail(order);
+        if (!detail.imageDataUrl) throw new Error("Đơn này chưa có dữ liệu ảnh để xem.");
+        openImageLightbox(detail.imageDataUrl);
+      } catch (error) {
+        console.error(error);
+        button.textContent = "Không mở được";
         setTimeout(() => {
           button.textContent = originalLabel;
         }, 1200);
@@ -1341,6 +1434,90 @@ function getCandidateGroupLink(candidate, application) {
   return /^https?:\/\//i.test(value) ? value : `https://${value}`;
 }
 
+function getCandidateCvLink(candidate, application) {
+  const value = application?.cvDataUrl || application?.cvLink || application?.resumeLink || application?.profileLink || application?.fileUrl || getCandidateLink(candidate, ["cvDataUrl", "cvLink", "cvUrl", "resumeLink", "resumeUrl", "profileLink", "profileUrl", "fileUrl"]);
+  if (!value) return "";
+  if (candidate?.cvDataUrl && candidate?.id) return `/api/candidates/${encodeURIComponent(candidate.id)}/cv`;
+  if (/^(data:|blob:)/i.test(value)) return value;
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+}
+
+function getCandidateCvFileName(candidate, application) {
+  return application?.cvFileName || candidate.cvFileName || "cv";
+}
+
+function openDataUrlInNewTab(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:([^;,]+)?(;base64)?,(.*)$/);
+  if (!match) {
+    const opened = window.open(dataUrl, "_blank", "noopener");
+    if (!opened) window.location.href = dataUrl;
+    return;
+  }
+  const mimeType = match[1] || "application/octet-stream";
+  const isBase64 = Boolean(match[2]);
+  const dataPart = match[3] || "";
+  const binary = isBase64 ? atob(dataPart) : decodeURIComponent(dataPart);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  const opened = window.open(blobUrl, "_blank", "noopener");
+  if (!opened) window.location.href = blobUrl;
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+}
+
+function createObjectUrlFromDataUrl(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:([^;,]+)?(;base64)?,(.*)$/);
+  if (!match) return "";
+  const mimeType = match[1] || "application/octet-stream";
+  const isBase64 = Boolean(match[2]);
+  const dataPart = match[3] || "";
+  const binary = isBase64 ? atob(dataPart) : decodeURIComponent(dataPart);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+}
+
+function closeCandidateCvDialog() {
+  const dialog = document.getElementById("candidateCvDialog");
+  const viewer = document.getElementById("candidateCvViewer");
+  if (dialog.open) dialog.close();
+  viewer.innerHTML = "";
+  if (activeCvObjectUrl) {
+    URL.revokeObjectURL(activeCvObjectUrl);
+    activeCvObjectUrl = "";
+  }
+}
+
+function openCandidateCvViewer(candidate, application) {
+  const cvLink = getCandidateCvLink(candidate, application);
+  if (!cvLink) return;
+  const fileName = getCandidateCvFileName(candidate, application);
+  const viewer = document.getElementById("candidateCvViewer");
+  if (activeCvObjectUrl) {
+    URL.revokeObjectURL(activeCvObjectUrl);
+    activeCvObjectUrl = "";
+  }
+  const source = /^data:/i.test(cvLink) ? createObjectUrlFromDataUrl(cvLink) : cvLink;
+  if (!source) return;
+  if (/^blob:/i.test(source)) activeCvObjectUrl = source;
+  const isImage = /^data:image\//i.test(cvLink) || /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(fileName) || /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(cvLink);
+  document.getElementById("candidateCvTitle").textContent = fileName || "CV ứng viên";
+  viewer.innerHTML = isImage
+    ? `<img src="${escapeHtml(source)}" alt="${escapeHtml(fileName || "CV ứng viên")}">`
+    : `<iframe src="${escapeHtml(source)}" title="${escapeHtml(fileName || "CV ứng viên")}"></iframe>`;
+  document.getElementById("candidateCvDialog").showModal();
+}
+
+function openCandidateCvById(candidateId) {
+  const candidate = currentCandidates.find((item) => item.id === candidateId);
+  if (!candidate) return;
+  openCandidateCvViewer(candidate, getCandidateApplication(candidate));
+}
+
 function getCandidateZaloLink(candidate) {
   const directLink = getCandidateLink(candidate, ["zaloLink", "zaloUrl", "zalo", "zaloGroup"]);
   if (directLink) return directLink;
@@ -1390,6 +1567,16 @@ function renderCandidateGroupCell(groupLink) {
   `;
 }
 
+function renderCandidateCvCell(candidate, application) {
+  const cvLink = getCandidateCvLink(candidate, application);
+  const fileName = getCandidateCvFileName(candidate, application);
+  return `
+    <span class="candidate-cv-cell">
+      ${cvLink ? `<button class="table-link table-link-button candidate-cv-button" type="button" data-candidate-cv-id="${escapeHtml(candidate.id || "")}" title="${escapeHtml(fileName)}">Mở CV</button>` : `<span class="muted-value">Chưa có</span>`}
+    </span>
+  `;
+}
+
 function renderCandidateTable(candidates) {
   const list = document.getElementById("orderList") || document.getElementById("ordersList");
   const search = document.getElementById("candidateSearch")?.value.trim() || "";
@@ -1406,6 +1593,7 @@ function renderCandidateTable(candidates) {
         getCandidateIndustry(candidate, application),
         getCandidateStatus(candidate, application),
         getCandidateCtv(candidate, application),
+        getCandidateCvLink(candidate, application),
         getCandidateJoinedAt(candidate, application),
         candidate.zaloLink,
         application?.groupLink || candidate.groupLink,
@@ -1457,6 +1645,7 @@ function renderCandidateTable(candidates) {
         <span>Ngành</span>
         <span>Trạng thái</span>
         <span>CTV</span>
+        <span>CV</span>
         <span>Link nhóm</span>
         <span>Ngày</span>
         <span>Xóa</span>
@@ -1487,6 +1676,7 @@ function renderCandidateTable(candidates) {
               <span class="candidate-ctv-cell">
                 ${ctvLink ? `<a class="table-link name-link" href="${escapeHtml(ctvLink)}" target="_blank" rel="noopener">${escapeHtml(ctvName)}</a>` : escapeHtml(ctvName)}
               </span>
+              ${renderCandidateCvCell(candidate, application)}
               ${renderCandidateGroupCell(groupLink)}
               <span class="candidate-date-cell">${escapeHtml(formatShortDate(getCandidateJoinedAt(candidate, application)))}</span>
               <span class="candidate-delete-cell">
@@ -1688,6 +1878,7 @@ function renderCandidateLoadingTable() {
         <span>Ngành</span>
         <span>Trạng thái</span>
         <span>CTV</span>
+        <span>CV</span>
         <span>Link nhóm</span>
         <span>Ngày</span>
         <span>Xóa</span>
@@ -1880,9 +2071,6 @@ function openOrderDetail(order) {
   const modal = document.getElementById("orderDetailModal");
   const fallbackJobData = buildJobDataFromOrder(order);
   const fallbackText = makeShortText(fallbackJobData);
-  const fallbackJson = JSON.stringify(buildJobJson(fallbackJobData), null, 2);
-  const hasSavedJson = order.jobJson && order.jobJson !== "{}";
-  const jsonText = hasSavedJson ? formatJsonForDetail(order.jobJson) : fallbackJson;
   const textUpFb = order.textUpFb || fallbackText || "Chưa có text up FB";
   const imageFileName = `${sanitizeFileName(`${order.code} - ${getOrderShortTitle(order)}`)}.${getImageExtension(order.imageDataUrl)}`;
 
@@ -1901,10 +2089,6 @@ function openOrderDetail(order) {
         <button class="detail-action-button" type="button" data-copy-detail-text="${escapeHtml(textUpFb)}">Copy text</button>
       </div>
       <pre>${escapeHtml(textUpFb)}</pre>
-    </div>
-    <div class="detail-box">
-      <strong>JSON database</strong>
-      <pre>${escapeHtml(jsonText)}</pre>
     </div>
   `;
   modal.hidden = false;
@@ -2012,6 +2196,23 @@ function bindImageLightbox() {
       event.stopPropagation();
       closeImageLightbox();
     }
+  });
+}
+
+function bindCandidateCvViewer() {
+  document.addEventListener("click", (event) => {
+    const cvButton = event.target.closest("[data-candidate-cv-id]");
+    if (!cvButton) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openCandidateCvById(cvButton.dataset.candidateCvId);
+  }, true);
+  document.getElementById("closeCandidateCv").addEventListener("click", closeCandidateCvDialog);
+  document.getElementById("candidateCvDialog").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) closeCandidateCvDialog();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && document.getElementById("candidateCvDialog").open) closeCandidateCvDialog();
   });
 }
 
@@ -2191,10 +2392,11 @@ function resetCreateOrderForm() {
   const form = document.getElementById("createOrderForm");
   form.reset();
   form.elements.headcount.value = 1;
+  form.elements.orderType.value = "Tokutei";
   editingOrderCode = "";
   editingOrderSnapshot = null;
   imageDataReady = false;
-  document.getElementById("rawOrderText").value = "";
+  document.getElementById("rawOrderText").value = buildRawTextFromOrder(Object.fromEntries(new FormData(form).entries()));
   document.getElementById("imagePasteBox").textContent = "Bấm vào đây rồi Ctrl+V ảnh đơn";
   document.getElementById("imagePasteStatus").textContent = "Ảnh sẽ được dùng để đánh dấu đơn có hình ảnh.";
   document.getElementById("createOrderMessage").textContent = "";
@@ -2220,9 +2422,12 @@ function reopenOrder(order, options = {}) {
   form.elements.title.value = order.title || "";
   form.elements.department.value = getOrderIndustries(order).join(", ") || order.department || "";
   form.elements.location.value = fallbackJobData.location !== "Chưa rõ" ? fallbackJobData.location : "";
+  form.elements.salaryText.value = fallbackJobData.salaryText !== "Liên hệ" ? fallbackJobData.salaryText : "";
+  form.elements.housing.value = fallbackJobData.housing || "";
+  form.elements.orderType.value = fallbackJobData.orderType || "Tokutei";
   form.elements.headcount.value = order.headcount || 1;
   form.elements.status.value = order.status || "Chờ duyệt";
-  document.getElementById("rawOrderText").value = order.rawText || buildRawTextFromOrder(order);
+  document.getElementById("rawOrderText").value = buildRawTextFromOrder(Object.fromEntries(new FormData(form).entries()));
 
   if (order.imageDataUrl) {
     document.getElementById("imagePasteBox").innerHTML = `<img alt="Ảnh đơn đã paste" src="${escapeHtml(order.imageDataUrl)}">`;
@@ -2234,7 +2439,8 @@ function reopenOrder(order, options = {}) {
 
   document.getElementById("facebookPreviewText").innerHTML = escapeHtml(order.textUpFb || fallbackText).replace(/\n/g, "<br>");
   document.getElementById("previewOrderCode").textContent = `Mã đơn: ${order.code || "--"}`;
-  document.getElementById("createOrderJson").textContent = order.jobJson && order.jobJson !== "{}" ? formatJsonForDetail(order.jobJson) : fallbackJson;
+  const jsonPreview = document.getElementById("createOrderJson");
+  if (jsonPreview) jsonPreview.textContent = order.jobJson && order.jobJson !== "{}" ? formatJsonForDetail(order.jobJson) : fallbackJson;
   document.getElementById("createOrderMessage").textContent = isLoadingDetail ? "Đang tải dữ liệu đã lưu..." : "";
   document.getElementById("createOrderMessage").className = "form-message";
   updateCreateImageBadges();
@@ -2252,20 +2458,23 @@ function readJsonValue(value, key) {
 }
 
 function buildJobDataFromOrder(order) {
-  const savedLocation = readJsonValue(order.jobJson, "location");
+  const formIndustries = splitIndustries(order.department || order.industry || "");
+  const savedLocation = order.location || readJsonValue(order.jobJson, "location");
   const savedRequirement = readJsonValue(order.jobJson, "requirement");
-  const savedSalary = readJsonValue(order.jobJson, "salary_text");
+  const savedSalary = order.salaryText || readJsonValue(order.jobJson, "salary_text");
+  const savedHousing = order.housing || readJsonValue(order.jobJson, "housing");
+  const savedOrderType = order.orderType || readJsonValue(order.jobJson, "order_type");
   return {
     orderCode: order.code || "Chưa có",
-    orderType: "Đơn tuyển",
-    industry: getOrderIndustries(order)[0] || order.department || "Đơn tuyển",
-    industries: getOrderIndustries(order),
+    orderType: savedOrderType || "Tokutei",
+    industry: getOrderIndustries(order)[0] || formIndustries[0] || order.department || "Đơn tuyển",
+    industries: getOrderIndustries(order).length ? getOrderIndustries(order) : formIndustries,
     jobTitle: order.title || "Đơn tuyển",
     location: savedLocation || "Chưa rõ",
     company: readJsonValue(order.jobJson, "company") || "",
     salaryText: savedSalary || "Liên hệ",
     allowance: "",
-    housing: readJsonValue(order.jobJson, "housing") || "",
+    housing: savedHousing || "",
     insurance: readJsonValue(order.jobJson, "insurance_benefits") || "",
     workingHours: readJsonValue(order.jobJson, "working_hours") || "",
     benefit: readJsonValue(order.jobJson, "benefits") || "",
@@ -2274,7 +2483,7 @@ function buildJobDataFromOrder(order) {
     salaryNumber: readJsonValue(order.jobJson, "salary_number") || "",
     salaryPeriod: readJsonValue(order.jobJson, "salary_period") || "",
     interview: readJsonValue(order.jobJson, "interview") || "Liên hệ",
-    quantity: order.headcount || "",
+    quantity: order.headcount || order.quantity || "",
     daysOff: readJsonValue(order.jobJson, "days_off") || "Liên hệ",
     work: readJsonValue(order.jobJson, "job_description") || order.title || "Đơn tuyển",
     back: readJsonValue(order.jobJson, "back_fee") || "",
@@ -2287,14 +2496,16 @@ function buildJobDataFromOrder(order) {
 
 function buildRawTextFromOrder(order) {
   const jobData = buildJobDataFromOrder(order);
+  const salaryLine = jobData.salaryText && jobData.salaryText !== "Liên hệ" ? `LCB: ${jobData.salaryText}` : "LCB";
+  const housingLine = jobData.housing ? `NHÀ: ${jobData.housing}` : "NHÀ";
+  const requirementLine = jobData.requirement && jobData.requirement !== "Liên hệ" ? `Yc: ${jobData.requirement}` : "Yc:";
   return [
-    `Mã đơn: ${jobData.orderCode}`,
-    `Vị trí: ${jobData.jobTitle}`,
-    `Nhóm ngành: ${(jobData.industries && jobData.industries.length ? jobData.industries : [jobData.industry]).filter(Boolean).join(", ")}`,
+    `🆘 ${jobData.jobTitle} - ${jobData.orderCode}`,
     jobData.location !== "Chưa rõ" ? `Khu vực: ${jobData.location}` : "",
-    `Số lượng: ${jobData.quantity || order.headcount || 1}`,
-    jobData.salaryText !== "Liên hệ" ? `Lương: ${jobData.salaryText}` : "",
-    jobData.requirement !== "Liên hệ" ? `Yêu cầu: ${jobData.requirement}` : "",
+    salaryLine,
+    housingLine,
+    requirementLine,
+    `SL: ${jobData.quantity || order.headcount || 1}`,
   ].filter(Boolean).join("\n");
 }
 
@@ -2327,16 +2538,14 @@ function bindCreateOrderModal() {
     dialog.close();
   });
 
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) {
-      dialog.close();
-    }
-  });
-
   document.getElementById("parseOrderButton").addEventListener("click", parseOrderText);
 
   document.getElementById("clearCreateOrderButton").addEventListener("click", () => {
     resetCreateOrderForm();
+  });
+
+  document.getElementById("rawOrderText").addEventListener("input", () => {
+    orderInputSource = "text";
   });
 
   document.getElementById("copyPreviewTextButton").addEventListener("click", async () => {
@@ -2365,8 +2574,14 @@ function bindCreateOrderModal() {
   });
 
   form.querySelectorAll("input, select, textarea").forEach((field) => {
-    field.addEventListener("input", updateCreatePreview);
-    field.addEventListener("change", updateCreatePreview);
+    field.addEventListener("input", () => {
+      if (field.id !== "rawOrderText") orderInputSource = "form";
+      updateCreatePreview();
+    });
+    field.addEventListener("change", () => {
+      if (field.id !== "rawOrderText") orderInputSource = "form";
+      updateCreatePreview();
+    });
   });
 
   form.addEventListener("submit", async (event) => {
@@ -2418,6 +2633,10 @@ function resetCreateCandidateForm() {
   const form = document.getElementById("createCandidateForm");
   form.reset();
   form.elements.stage.value = "Chờ PV";
+  form.elements.cvDataUrl.value = "";
+  form.elements.cvFileName.value = "";
+  document.getElementById("candidateCvFile").value = "";
+  setCandidateCvStatus("");
   document.getElementById("candidateStagePreview").value = "Chờ PV";
   syncCandidateOrderFields();
   syncCandidateCtvFields();
@@ -2433,6 +2652,38 @@ function setCandidateDialogMode(mode) {
     ? "Cập nhật thông tin ứng viên đang chọn."
     : "Nhập thông tin ứng viên mới và lưu trực tiếp vào database.";
   document.getElementById("candidateSubmitLabel").textContent = isEdit ? "Cập nhật UV" : "Lưu UV";
+}
+
+function isAcceptedCvFile(file) {
+  return Boolean(file && (file.type === "application/pdf" || file.type.startsWith("image/") || /\.(pdf|png|jpe?g|webp)$/i.test(file.name)));
+}
+
+function setCandidateCvStatus(text, isError = false) {
+  const status = document.getElementById("candidateCvStatus");
+  status.textContent = text;
+  status.classList.toggle("error", isError);
+}
+
+function readCandidateCvFile(file, form) {
+  const fileInput = document.getElementById("candidateCvFile");
+  if (!file) return;
+  if (!isAcceptedCvFile(file)) {
+    fileInput.value = "";
+    form.elements.cvDataUrl.value = "";
+    form.elements.cvFileName.value = "";
+    setCandidateCvStatus("Vui lòng chọn PDF hoặc hình ảnh.", true);
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    form.elements.cvDataUrl.value = reader.result;
+    form.elements.cvFileName.value = file.name;
+    setCandidateCvStatus(`Đã chọn file ${file.name}`);
+  };
+  reader.onerror = () => {
+    setCandidateCvStatus("Không đọc được file CV.", true);
+  };
+  reader.readAsDataURL(file);
 }
 
 async function openCreateCandidateModal() {
@@ -2464,6 +2715,9 @@ async function openEditCandidateModal(candidateId) {
   form.elements.phone.value = candidate.phone || "";
   form.elements.email.value = candidate.email || "";
   form.elements.groupLink.value = getCandidateGroupLink(candidate, application) || "";
+  form.elements.cvDataUrl.value = candidate.cvDataUrl || candidate.cvLink || "";
+  form.elements.cvFileName.value = candidate.cvFileName || "";
+  setCandidateCvStatus(candidate.cvFileName ? `Đã chọn file ${candidate.cvFileName}` : (getCandidateCvLink(candidate, application) ? "Đã có CV." : ""));
   form.elements.stage.value = status;
   document.getElementById("candidateStagePreview").value = status;
   document.getElementById("candidateOrderSearch").value = order ? getOrderSearchLabel(order) : "";
@@ -2494,6 +2748,25 @@ function bindCreateCandidateModal() {
   document.getElementById("candidateOrderSearch").addEventListener("change", syncCandidateOrderFields);
   document.getElementById("candidateCtvSearch").addEventListener("input", syncCandidateCtvFields);
   document.getElementById("candidateCtvSearch").addEventListener("change", syncCandidateCtvFields);
+  document.getElementById("candidateCvDropzone").addEventListener("click", () => {
+    document.getElementById("candidateCvFile").click();
+  });
+  document.getElementById("candidateCvDropzone").addEventListener("dragover", (event) => {
+    event.preventDefault();
+    event.currentTarget.classList.add("is-dragging");
+  });
+  document.getElementById("candidateCvDropzone").addEventListener("dragleave", (event) => {
+    event.currentTarget.classList.remove("is-dragging");
+  });
+  document.getElementById("candidateCvDropzone").addEventListener("drop", (event) => {
+    event.preventDefault();
+    event.currentTarget.classList.remove("is-dragging");
+    readCandidateCvFile(event.dataTransfer.files?.[0], form);
+  });
+  document.getElementById("candidateCvFile").addEventListener("change", () => {
+    const fileInput = document.getElementById("candidateCvFile");
+    readCandidateCvFile(fileInput.files?.[0], form);
+  });
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) closeCreateCandidateModal();
   });
@@ -2850,6 +3123,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindNavigation();
   bindOrderDetailDialog();
   bindImageLightbox();
+  bindCandidateCvViewer();
   bindDeleteOrderDialog();
   bindDeleteCandidateDialog();
   bindDeleteCtvDialog();
