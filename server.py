@@ -1,5 +1,6 @@
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import base64
+import io
 import json
 import os
 import re
@@ -15,6 +16,7 @@ from bson import ObjectId
 from dotenv import load_dotenv
 from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.errors import DuplicateKeyError
+from PIL import Image, ImageOps
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -36,11 +38,13 @@ ORDER_LIST_PROJECTION = {
     "title": 1,
     "orderType": 1,
     "jobJson.order_type": 1,
+    "jobJson.back_fee": 1,
     "department": 1,
     "industry": 1,
     "industries": 1,
     "headcount": 1,
     "location": 1,
+    "backFee": 1,
     "status": 1,
     "createdAt": 1,
     "updatedAt": 1,
@@ -80,6 +84,7 @@ CANDIDATE_LIST_PROJECTION = {
     "createdAt": 1,
     "updatedAt": 1,
     "hasCvData": 1,
+    "cvFiles": 1,
 }
 CTV_LIST_PROJECTION = {
     "fullName": 1,
@@ -435,6 +440,23 @@ def normalize_candidate_payload(data):
     if email_key and not is_valid_email(email_key):
         raise ValueError("Email ứng viên không đúng định dạng.")
     cv_data_url = data.get("cvDataUrl") or ""
+    cv_files = data.get("cvFiles") or []
+    if isinstance(cv_files, str):
+        try:
+            cv_files = json.loads(cv_files) if cv_files else []
+        except json.JSONDecodeError:
+            raise ValueError("Danh sách file CV không hợp lệ.")
+    if not isinstance(cv_files, list):
+        raise ValueError("Danh sách file CV không hợp lệ.")
+    if len(cv_files) > 20:
+        raise ValueError("Mỗi CV chỉ hỗ trợ tối đa 20 ảnh.")
+    normalized_cv_files = []
+    for file in cv_files:
+        if not isinstance(file, dict) or not has_valid_cv_data_url(file.get("dataUrl")):
+            raise ValueError("File CV không hợp lệ hoặc không có nội dung.")
+        normalized_cv_files.append({"name": str(file.get("name") or "cv"), "dataUrl": file["dataUrl"]})
+    if normalized_cv_files and any(not item["dataUrl"].startswith("data:image/") for item in normalized_cv_files):
+        raise ValueError("Khi tải nhiều file CV, chỉ được chọn ảnh.")
     if cv_data_url not in {"__KEEP_EXISTING_CV__", "__DELETE_CV__"} and cv_data_url and not has_valid_cv_data_url(cv_data_url):
         raise ValueError("File CV không hợp lệ hoặc không có nội dung.")
     payload = {
@@ -448,8 +470,9 @@ def normalize_candidate_payload(data):
         "groupLink": data.get("groupLink") or data.get("groupUrl") or data.get("facebookGroup") or data.get("sourceLink") or "",
         "cvDataUrl": cv_data_url,
         "cvFileName": data.get("cvFileName") or "",
+        "cvFiles": normalized_cv_files,
         "cvLink": data.get("cvLink") or data.get("cvUrl") or data.get("resumeLink") or data.get("resumeUrl") or data.get("profileLink") or data.get("profileUrl") or data.get("fileUrl") or "",
-        "hasCvData": has_valid_cv_data_url(cv_data_url),
+        "hasCvData": bool(normalized_cv_files) or has_valid_cv_data_url(cv_data_url),
         "role": data.get("role", "Ứng viên"),
         "stage": data.get("stage", "Chờ PV"),
         "status": data.get("status", "Đang hoạt động"),
@@ -754,6 +777,7 @@ class MongoStore:
             "industries": order.get("industries") or split_industries(order.get("industry") or order.get("department", "")),
             "headcount": order.get("headcount", 0),
             "location": order.get("location", ""),
+            "backFee": order.get("backFee") or (order.get("jobJson") or {}).get("back_fee", ""),
             "pipeline": f"{application_count} ứng viên",
             "status": order.get("status", ""),
             "badge": badge_for_status(order.get("status", "")),
@@ -1048,7 +1072,8 @@ class MongoStore:
                 "address": item.get("address", ""),
                 "zaloLink": item.get("zaloLink") or item.get("zaloUrl") or item.get("zalo") or "",
                 "groupLink": item.get("groupLink") or item.get("groupUrl") or item.get("facebookGroup") or item.get("sourceLink") or "",
-                "hasCv": bool(item.get("hasCvData") or item.get("cvLink") or item.get("cvUrl") or item.get("resumeLink") or item.get("resumeUrl") or item.get("profileLink") or item.get("profileUrl") or item.get("fileUrl")),
+                "hasCv": bool(item.get("hasCvData") or item.get("cvFiles") or item.get("cvLink") or item.get("cvUrl") or item.get("resumeLink") or item.get("resumeUrl") or item.get("profileLink") or item.get("profileUrl") or item.get("fileUrl")),
+                "cvFileCount": len(item.get("cvFiles") or []) or int(bool(item.get("hasCvData"))),
                 "cvFileName": item.get("cvFileName") or "",
                 "cvLink": item.get("cvLink") or item.get("cvUrl") or item.get("resumeLink") or item.get("resumeUrl") or item.get("profileLink") or item.get("profileUrl") or item.get("fileUrl") or "",
                 "role": item.get("role", "Ứng viên"),
@@ -1076,6 +1101,7 @@ class MongoStore:
             payload.pop("cvDataUrl", None)
             payload.pop("cvFileName", None)
             payload.pop("hasCvData", None)
+            payload.pop("cvFiles", None)
         delete_cv = payload.get("cvDataUrl") == "__DELETE_CV__"
         if delete_cv:
             payload.pop("cvDataUrl", None)
@@ -1095,6 +1121,7 @@ class MongoStore:
                 "profileLink": "",
                 "profileUrl": "",
                 "fileUrl": "",
+                "cvFiles": "",
             })
         if not payload.get("phoneKey"):
             unset_fields["phoneKey"] = ""
@@ -1109,14 +1136,20 @@ class MongoStore:
             raise ValueError("Không tìm thấy ứng viên.")
         return {"ok": True}
 
-    def get_candidate_cv(self, candidate_id):
-        item = self.db.candidates.find_one({"_id": mongo_id(candidate_id)}, {"cvDataUrl": 1, "cvFileName": 1, "updatedAt": 1})
+    def get_candidate_cv(self, candidate_id, page=0):
+        item = self.db.candidates.find_one({"_id": mongo_id(candidate_id)}, {"cvDataUrl": 1, "cvFileName": 1, "cvFiles": 1, "updatedAt": 1})
         if not item:
             raise ValueError("Không tìm thấy ứng viên.")
-        data_url = item.get("cvDataUrl") or ""
+        files = item.get("cvFiles") or []
+        if files and 0 <= page < len(files):
+            data_url = files[page].get("dataUrl", "")
+            file_name = files[page].get("name", f"cv-{page + 1}")
+        else:
+            data_url = item.get("cvDataUrl") or ""
+            file_name = item.get("cvFileName") or "cv"
         if not has_valid_cv_data_url(data_url):
             raise ValueError("Ứng viên chưa có file CV hợp lệ.")
-        cache_id = f"{candidate_id}:{iso_datetime(item.get('updatedAt'))}"
+        cache_id = f"{candidate_id}:{page}:{iso_datetime(item.get('updatedAt'))}"
         with cv_binary_cache_lock:
             cached = cv_binary_cache.get(cache_id)
             if cached:
@@ -1134,7 +1167,7 @@ class MongoStore:
         result = {
             "payload": payload,
             "mimeType": mime_type,
-            "fileName": item.get("cvFileName") or "cv",
+            "fileName": file_name,
         }
         # Keep only a tiny LRU cache to avoid repeatedly decoding large base64 CVs.
         with cv_binary_cache_lock:
@@ -1142,6 +1175,42 @@ class MongoStore:
             while len(cv_binary_cache) > CV_BINARY_CACHE_MAX_ITEMS:
                 cv_binary_cache.pop(next(iter(cv_binary_cache)))
         return result
+
+    def get_candidate_cv_download(self, candidate_id):
+        item = self.db.candidates.find_one({"_id": mongo_id(candidate_id)}, {"fullName": 1, "cvDataUrl": 1, "cvFileName": 1, "cvFiles": 1})
+        if not item:
+            raise ValueError("Không tìm thấy ứng viên.")
+        files = item.get("cvFiles") or []
+        # A one-file CV (including an original PDF) is downloaded unchanged.
+        if not files:
+            cv = self.get_candidate_cv(candidate_id)
+            # Preserve an uploaded PDF name, but use the candidate name for a
+            # standalone image so all image-based CV downloads are consistent.
+            if cv["mimeType"].startswith("image/"):
+                extension = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(cv["mimeType"], ".img")
+                safe_name = re.sub(r'[\\/:*?"<>|]+', "-", str(item.get("fullName") or "cv")).strip(" .-") or "cv"
+                return {**cv, "downloadName": f"{safe_name}{extension}"}
+            return {**cv, "downloadName": cv["fileName"]}
+
+        pages = []
+        try:
+            for file in files:
+                data_url = file.get("dataUrl") or ""
+                if not has_valid_cv_data_url(data_url):
+                    raise ValueError("Một ảnh CV không hợp lệ.")
+                raw_data = data_url.split(",", 1)[1]
+                image_bytes = base64.b64decode(raw_data, validate=True)
+                with Image.open(io.BytesIO(image_bytes)) as image:
+                    # PDF pages must be RGB; respect an image's EXIF rotation first.
+                    pages.append(ImageOps.exif_transpose(image).convert("RGB"))
+            if not pages:
+                raise ValueError("Ứng viên chưa có file CV hợp lệ.")
+            output = io.BytesIO()
+            pages[0].save(output, format="PDF", save_all=True, append_images=pages[1:], resolution=100.0)
+            safe_name = re.sub(r'[\\/:*?"<>|]+', "-", str(item.get("fullName") or "cv")).strip(" .-") or "cv"
+            return {"payload": output.getvalue(), "mimeType": "application/pdf", "downloadName": f"{safe_name}.pdf"}
+        except (OSError, ValueError, TypeError, IndexError) as error:
+            raise ValueError("Không thể ghép ảnh CV thành PDF.") from error
 
     def delete_candidate(self, candidate_id):
         result = self.db.candidates.delete_one({"_id": mongo_id(candidate_id)})
@@ -1263,11 +1332,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def send_binary(self, payload, mime_type, file_name="file"):
+    def send_binary(self, payload, mime_type, file_name="file", download=False):
         self.send_response(200)
         self.send_header("Content-Type", mime_type)
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{quote(file_name)}")
+        disposition = "attachment" if download else "inline"
+        self.send_header("Content-Disposition", f"{disposition}; filename*=UTF-8''{quote(file_name)}")
         # The URL includes the candidate update timestamp, so a browser can safely
         # reuse an already opened CV without downloading it a second time.
         self.send_header("Cache-Control", "private, max-age=86400, immutable")
@@ -1321,10 +1391,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/candidates":
             self.send_json(cached_response("candidates", store.list_candidates))
             return
+        if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/cv/download"):
+            item_id = unquote(parsed.path.removeprefix("/api/candidates/").removesuffix("/cv/download"))
+            try:
+                cv = store.get_candidate_cv_download(item_id)
+                self.send_binary(cv["payload"], cv["mimeType"], cv["downloadName"], download=True)
+            except ValueError as error:
+                self.send_json({"ok": False, "message": str(error)}, 404)
+            return
         if parsed.path.startswith("/api/candidates/") and parsed.path.endswith("/cv"):
             item_id = unquote(parsed.path.removeprefix("/api/candidates/").removesuffix("/cv"))
             try:
-                cv = store.get_candidate_cv(item_id)
+                try:
+                    page = max(0, int(query.get("page", ["0"])[0]))
+                except (TypeError, ValueError):
+                    page = 0
+                cv = store.get_candidate_cv(item_id, page)
                 self.send_binary(cv["payload"], cv["mimeType"], cv["fileName"])
             except ValueError as error:
                 self.send_json({"ok": False, "message": str(error)}, 404)

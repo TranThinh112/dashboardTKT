@@ -264,6 +264,7 @@ function buildOrderEditSnapshot(payload) {
     location: payload.location,
     salaryText: payload.salaryText,
     housing: payload.housing,
+    backFee: payload.backFee,
     requirement: payload.requirement,
     orderType: payload.orderType,
     headcount: payload.headcount,
@@ -530,6 +531,7 @@ function normalizeText(text) {
 
 function stripEmoji(text) {
   return String(text || "")
+    .replace(/\p{Extended_Pictographic}/gu, "")
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
     .replace(/[\uFE0E\uFE0F]/g, "")
     .trim();
@@ -596,22 +598,33 @@ function parseCompactOrderText(raw) {
   const firstMatch = firstLine.match(/^(.*?)\s*[-–]\s*([A-Za-z0-9._/-]+)\s*$/);
   if (!firstMatch) return null;
 
-  const jobTitle = stripEmoji(firstMatch[1]);
-  const orderCode = normalizeText(firstMatch[2]);
+  const firstPart = stripEmoji(firstMatch[1]);
+  const secondPart = normalizeText(firstMatch[2]);
+  // Support both legacy "Vị trí - Mã" and the clearer "Mã - Vị trí" format.
+  const codeFirst = /\d/.test(firstPart) && /^[A-Za-z0-9._/-]+$/.test(firstPart);
+  const jobTitle = codeFirst ? secondPart : firstPart;
+  const orderCode = codeFirst ? normalizeText(firstPart) : secondPart;
   const labeledLocation = findValue(raw, [/^Khu vực\s*:\s*([^\n]+)/im, /^Tỉnh\s*:\s*([^\n]+)/im, /^Địa điểm\s*:\s*([^\n]+)/im]);
   const location = labeledLocation || stripLineLabel(lines[1], ["Khu vực", "Tỉnh", "Địa điểm"]);
-  const salaryText = lines.find((line) => /^LCB\b/i.test(line)) || "Liên hệ";
-  const housing = lines.find((line) => /^NHÀ\b/i.test(line)) || "";
-  const requirement = lines.find((line) => /^Yc\b|^Yêu cầu\b/i.test(line)) || "Liên hệ";
+  const salaryLine = lines.find((line) => /^LCB\b/i.test(line)) || "";
+  const salaryText = salaryLine.replace(/^LCB\s*:\s*/i, "").trim() || "Liên hệ";
+  const housingLine = lines.find((line) => /^NHÀ\s*:/i.test(line)) || "";
+  const housing = housingLine.replace(/^NHÀ\s*:\s*/i, "").trim();
+  const requirementLine = lines.find((line) => /^Yc\b|^Yêu cầu\b/i.test(line)) || "";
+  const requirement = requirementLine.replace(/^(?:Yc|Yêu cầu)\s*:\s*/i, "").trim() || "Liên hệ";
   const quantityLine = lines.find((line) => /^SL\b|^Số lượng\b/i.test(line)) || "";
   const quantityMatch = quantityLine.match(/\d+/);
-  const industries = splitIndustries(jobTitle);
+  const backLine = lines.find((line) => /^Back\s*:/i.test(line)) || "";
+  const back = backLine.replace(/^Back\s*:\s*/i, "").replace(/\s*man\s*$/i, "").trim();
+  // The compact text does not contain an industry field. Do not guess from a
+  // short job title; the user can choose the correct industry explicitly.
+  const industries = [];
 
   return {
     orderCode,
     orderType: "Đơn tuyển",
-    industry: industries[0] || cleanIndustryLabel(jobTitle),
-    industries: industries.length ? industries : [cleanIndustryLabel(jobTitle)],
+    industry: "",
+    industries,
     jobTitle,
     location,
     company: "",
@@ -629,7 +642,7 @@ function parseCompactOrderText(raw) {
     quantity: quantityMatch ? Number(quantityMatch[0]) : "",
     daysOff: "Liên hệ",
     work: jobTitle,
-    back: "",
+    back,
     source: {
       compact_text_used: true,
       image_ocr_used: false,
@@ -645,7 +658,7 @@ function parseRawTextByRules(raw) {
 
   const lines = raw.split(/\r?\n/).map(stripEmoji).filter(Boolean);
   const title = lines[0] || "Đơn tuyển";
-  const orderCode = findValue(raw, [/Mã đơn hàng\s*:\s*([^\n]+)/i, /Mã đơn\s*:\s*([^\n]+)/i]) || "Chưa có";
+  const orderCode = findValue(raw, [/Mã\s*(?:đơn hàng|đơn|đh)\s*:\s*([^\n]+)/i]) || "Chưa có";
   const location = findValue(raw, [/Tỉnh\s*:\s*([^\n]+)/i, /Nơi Làm Việc\s*([^\n]+)/i, /Nơi làm việc\s*:\s*([^\n]+)/i, /Địa điểm\s*:\s*([^\n]+)/i, /Khu vực\s*:\s*([^\n]+)/i]) || "Chưa rõ";
   const quantity = findValue(raw, [/Tuyển\s*:?\s*([0-9]+)/i, /Số Lượng Tuyển\s*([0-9]+)/i, /Số lượng\s*:\s*([0-9]+)/i]);
   const salaryText = findValue(raw, [/Lương\s*:\s*([^\n]+)/i, /Lương\s*Trợ cấp\s*([^\n]+)/i]) || "Liên hệ";
@@ -707,6 +720,14 @@ function yenToMan(text) {
     if (yen < 10000) return `${amount} ${unit}`;
     const man = yen / 10000;
     return `${Number.isInteger(man) ? String(man) : man.toFixed(1).replace(/\.0$/, "")}M`;
+  });
+}
+
+function formatMoneyThousands(text) {
+  return String(text || "").replace(/\b\d{4,}\b/g, (digits) => {
+    const groups = [];
+    for (let index = digits.length; index > 0; index -= 3) groups.unshift(digits.slice(Math.max(0, index - 3), index));
+    return groups.join(".");
   });
 }
 
@@ -840,6 +861,7 @@ function getCreateOrderFormData() {
   jobData.location = data.location || jobData.location || "Chưa rõ";
   jobData.salaryText = data.salaryText || jobData.salaryText || "Liên hệ";
   jobData.housing = data.housing || jobData.housing || "";
+  jobData.back = data.backFee || jobData.back || "";
   jobData.requirement = data.requirement || jobData.requirement || "Liên hệ";
   jobData.orderType = data.orderType || jobData.orderType || "Tokutei";
   jobData.quantity = Number(data.headcount || 0) || jobData.quantity || "";
@@ -888,6 +910,7 @@ function buildJobDataFromForm(data) {
     salaryText: data.salaryText || "Liên hệ",
     allowance: "",
     housing: data.housing || "",
+    back: data.backFee || "",
     insurance: "",
     workingHours: "",
     benefit: "",
@@ -899,7 +922,6 @@ function buildJobDataFromForm(data) {
     quantity: Number(data.headcount || 0) || "",
     daysOff: "Liên hệ",
     work: data.title || "Đơn tuyển",
-    back: "",
     source: {
       image_ocr_used: imageDataReady,
       pasted_text_used: Boolean(document.getElementById("rawOrderText")?.value.trim()),
@@ -909,10 +931,31 @@ function buildJobDataFromForm(data) {
 
 function parseOrderText() {
   const rawTextElement = document.getElementById("rawOrderText");
-  const formData = Object.fromEntries(new FormData(document.getElementById("createOrderForm")).entries());
-  rawTextElement.value = buildRawTextFromOrder(formData);
+  const rawText = rawTextElement.value.trim();
+  if (!rawText) return;
+  const data = parseRawTextByRules(rawText);
+  setCreateOrderFields({
+    code: data.orderCode === "Chưa có" ? "" : data.orderCode,
+    title: data.jobTitle,
+    department: (data.industries || []).join(", ") || data.industry,
+    location: data.location === "Chưa rõ" ? "" : data.location,
+    salaryText: data.salaryText === "Liên hệ" ? "" : data.salaryText,
+    housing: data.housing,
+    back: data.back,
+    requirement: data.requirement === "Liên hệ" ? "" : data.requirement,
+    orderType: data.orderType === "Đơn tuyển" ? "" : data.orderType,
+    headcount: data.quantity,
+  });
+  // A compact paste has no reliable industry information; clear any stale value.
+  if (data.source?.compact_text_used) document.getElementById("createOrderForm").elements.department.value = "";
   imageDataReady = document.getElementById("imagePasteBox").querySelector("img") !== null;
   updateCreateImageBadges();
+  updateCreatePreview();
+}
+
+function mergeOrderDataToText() {
+  const formData = Object.fromEntries(new FormData(document.getElementById("createOrderForm")).entries());
+  document.getElementById("rawOrderText").value = buildRawTextFromOrder(formData);
   updateCreatePreview();
 }
 
@@ -924,6 +967,7 @@ function setCreateOrderFields(data) {
   if (data.location) form.elements.location.value = data.location;
   if (data.salaryText) form.elements.salaryText.value = data.salaryText;
   if (data.housing) form.elements.housing.value = data.housing;
+  if (data.back) form.elements.backFee.value = String(data.back).replace(/\s*man\s*$/i, "").trim();
   if (data.requirement) form.elements.requirement.value = data.requirement;
   if (data.orderType) form.elements.orderType.value = data.orderType;
   if (data.headcount) form.elements.headcount.value = data.headcount;
@@ -943,6 +987,7 @@ function updateCreatePreview(parsedJobData) {
     salaryText: data.salaryText || "Liên hệ",
     allowance: "",
     housing: data.housing || "",
+    back: data.backFee || "",
     insurance: "",
     workingHours: "",
     benefit: "",
@@ -954,7 +999,6 @@ function updateCreatePreview(parsedJobData) {
     quantity: data.headcount || "",
     daysOff: "Liên hệ",
     work: data.title || "Đơn tuyển",
-    back: "",
     source: {
       image_ocr_used: false,
       pasted_text_used: Boolean(data.rawText),
@@ -1218,6 +1262,7 @@ function buildCandidateEditSnapshot(payload, selectedOrder, selectedCtv) {
     groupLink: payload.groupLink,
     cvDataUrl: payload.cvDataUrl,
     cvFileName: payload.cvFileName,
+    cvFiles: payload.cvFiles,
     stage: payload.stage,
     orderId: selectedOrder?.id || "",
     role: selectedOrder ? getOrderIndustryLabel(selectedOrder) : "",
@@ -1251,9 +1296,11 @@ function applyCandidateUpdateToState(candidateId, applicationId, payload, select
     nextCandidate.cvLink = "";
     nextCandidate.hasCv = false;
   } else if (!keepExistingCv) {
-    nextCandidate.cvFileName = payload.cvFileName || "";
+    const cvFiles = JSON.parse(payload.cvFiles || "[]");
+    nextCandidate.cvFileName = payload.cvFileName || cvFiles[0]?.name || "";
     nextCandidate.cvLink = payload.cvLink || "";
-    nextCandidate.hasCv = Boolean(payload.cvDataUrl || payload.cvLink);
+    nextCandidate.cvFileCount = cvFiles.length || Number(Boolean(payload.cvDataUrl || payload.cvLink));
+    nextCandidate.hasCv = Boolean(payload.cvDataUrl || payload.cvLink || cvFiles.length);
   }
 
   currentCandidates = currentCandidates.some((candidate) => candidate.id === candidateId)
@@ -1297,6 +1344,12 @@ function getCtvZaloLink(ctv) {
   return getVietnamZaloLinkFromPhone(ctv.phone);
 }
 
+function getOrderBackFee(order) {
+  return String(order?.backFee || readJsonValue(order?.jobJson, "back_fee") || "")
+    .replace(/\s*man\s*$/i, "")
+    .trim();
+}
+
 function renderOrders(orders) {
   const list = document.getElementById("orderList") || document.getElementById("ordersList");
   updateOrderSearchOptions(orders);
@@ -1319,6 +1372,7 @@ function renderOrders(orders) {
       (order) => {
         const shortTitle = getOrderShortTitle(order);
         const fullTitle = order.title || readJsonValue(order.jobJson, "job_title") || "";
+        const backFee = getOrderBackFee(order);
 
         return `
         <article class="order-card">
@@ -1341,11 +1395,13 @@ function renderOrders(orders) {
               </span>
               <span class="location-tag" data-tooltip="Tỉnh: ${escapeHtml(getOrderLocation(order))}"><span>Tỉnh: ${escapeHtml(getOrderLocation(order))}</span></span>
               <span class="order-type-tag">${escapeHtml(getOrderType(order))}</span>
+              <span class="back-fee-tag${backFee ? "" : " is-empty"}" title="${backFee ? `Back: ${escapeHtml(backFee)} man` : "Chưa nhập Back"}">Back: ${backFee ? `${escapeHtml(backFee)} man` : "Chưa có"}</span>
               <span class="meta-line"><b>Tạo</b><span>${escapeHtml(formatShortDateTime(order.createdAt))}</span></span>
               <span class="badges" aria-label="Trạng thái dữ liệu">
                 ${order.hasImage
                   ? `<button class="badge ok image-badge-button" type="button" data-order-image-code="${escapeHtml(order.code)}">Ảnh</button>`
                   : `<span class="badge warn">Không ảnh</span>`}
+                ${normalizeSearchText(order.status) === "gap" ? `<span class="order-urgent-badge">Gấp</span>` : ""}
               </span>
             </div>
           </div>
@@ -1593,7 +1649,7 @@ function getCandidateCvLink(candidate, application) {
   const value = application?.cvDataUrl || application?.cvLink || application?.resumeLink || application?.profileLink || application?.fileUrl || getCandidateLink(candidate, ["cvDataUrl", "cvLink", "cvUrl", "resumeLink", "resumeUrl", "profileLink", "profileUrl", "fileUrl"]);
   if (candidate?.hasCv && candidate?.id) {
     const version = encodeURIComponent(candidate.updatedAt || candidate.cvUpdatedAt || "1");
-    return `/api/candidates/${encodeURIComponent(candidate.id)}/cv?v=${version}`;
+    return `/api/candidates/${encodeURIComponent(candidate.id)}/cv?page=0&v=${version}`;
   }
   if (!value) return "";
   if (candidate?.cvDataUrl && candidate?.id) {
@@ -1669,13 +1725,22 @@ function openCandidateCvViewer(candidate, application) {
   const source = /^data:/i.test(cvLink) ? createObjectUrlFromDataUrl(cvLink) : cvLink;
   if (!source) return;
   if (/^blob:/i.test(source)) activeCvObjectUrl = source;
-  const isImage = /^data:image\//i.test(cvLink) || /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(fileName) || /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(cvLink);
+  const imageCount = Number(candidate.cvFileCount || 0);
+  const cvVersion = encodeURIComponent(candidate.updatedAt || candidate.cvUpdatedAt || "1");
+  const isImage = imageCount > 1 || /^data:image\//i.test(cvLink) || /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(fileName) || /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(cvLink);
   document.getElementById("candidateCvTitle").textContent = fileName || "CV ứng viên";
-  document.getElementById("candidateCvMeta").textContent = `${isImage ? "Ảnh CV" : "Tài liệu CV"} • ${candidate.fullName || "Ứng viên"}`;
+  document.getElementById("candidateCvMeta").textContent = `${imageCount > 1 ? `${imageCount} ảnh CV` : (isImage ? "Ảnh CV" : "Tài liệu CV")} • ${candidate.fullName || "Ứng viên"}`;
   document.getElementById("openCandidateCvNewTab").href = source;
   const downloadLink = document.getElementById("downloadCandidateCv");
-  downloadLink.href = source;
-  downloadLink.download = fileName || "cv";
+  if (candidate.id) {
+    downloadLink.href = `/api/candidates/${encodeURIComponent(candidate.id)}/cv/download?v=${cvVersion}`;
+    downloadLink.download = imageCount > 1
+      ? `${candidate.fullName || "cv"}.pdf`
+      : (isImage ? `${candidate.fullName || "cv"}${fileName.match(/\.[^.]+$/)?.[0] || ".jpg"}` : (fileName || "cv"));
+  } else {
+    downloadLink.href = source;
+    downloadLink.download = fileName || "cv";
+  }
   viewer.classList.add("is-loading");
   viewer.dataset.type = isImage ? "image" : "document";
   viewer.innerHTML = `
@@ -1685,7 +1750,9 @@ function openCandidateCvViewer(candidate, application) {
       <strong>${escapeHtml(candidate.fullName || "Ứng viên")}</strong>
     </div>
     <div class="cv-viewer-canvas">
-      ${isImage
+      ${imageCount > 1
+        ? Array.from({ length: imageCount }, (_, index) => `<img src="/api/candidates/${encodeURIComponent(candidate.id)}/cv?page=${index}&v=${cvVersion}" alt="Trang ${index + 1} CV">`).join("")
+        : isImage
         ? `<img src="${escapeHtml(source)}" alt="${escapeHtml(fileName || "CV ứng viên")}">`
         : `<iframe src="${escapeHtml(source)}" title="${escapeHtml(fileName || "CV ứng viên")}"></iframe>`}
     </div>`;
@@ -2194,7 +2261,6 @@ async function refreshDashboard() {
       <article class="order-card order-card-empty">
         <div class="empty-state">
           <strong>Lỗi tải dữ liệu</strong>
-          <span>${escapeHtml(error.message)}</span>
         </div>
       </article>
     `;
@@ -2218,7 +2284,7 @@ function bindNavigation() {
       updateTopbarCreateButton();
       renderActiveSection().catch((error) => {
         const list = document.getElementById("orderList") || document.getElementById("ordersList");
-        list.innerHTML = `<div class="clean-empty-state"><strong>Lỗi tải dữ liệu</strong><span>${escapeHtml(error.message)}</span></div>`;
+        list.innerHTML = `<div class="clean-empty-state"><strong>Lỗi tải dữ liệu</strong></div>`;
       });
     });
   });
@@ -2618,6 +2684,7 @@ function reopenOrder(order, options = {}) {
   form.elements.location.value = fallbackJobData.location !== "Chưa rõ" ? fallbackJobData.location : "";
   form.elements.salaryText.value = fallbackJobData.salaryText !== "Liên hệ" ? fallbackJobData.salaryText : "";
   form.elements.housing.value = fallbackJobData.housing || "";
+  form.elements.backFee.value = String(fallbackJobData.back || "").replace(/\s*man\s*$/i, "").trim();
   form.elements.requirement.value = fallbackJobData.requirement !== "Liên hệ" ? fallbackJobData.requirement : "";
   form.elements.orderType.value = fallbackJobData.orderType || "Tokutei";
   form.elements.headcount.value = order.headcount || 1;
@@ -2658,6 +2725,7 @@ function buildJobDataFromOrder(order) {
   const savedRequirement = order.requirement || readJsonValue(order.jobJson, "requirement");
   const savedSalary = order.salaryText || readJsonValue(order.jobJson, "salary_text");
   const savedHousing = order.housing || readJsonValue(order.jobJson, "housing");
+  const savedBack = order.backFee || readJsonValue(order.jobJson, "back_fee");
   const savedOrderType = order.orderType || readJsonValue(order.jobJson, "order_type");
   return {
     orderCode: order.code || "Chưa có",
@@ -2670,6 +2738,7 @@ function buildJobDataFromOrder(order) {
     salaryText: savedSalary || "Liên hệ",
     allowance: "",
     housing: savedHousing || "",
+    back: savedBack || "",
     insurance: readJsonValue(order.jobJson, "insurance_benefits") || "",
     workingHours: readJsonValue(order.jobJson, "working_hours") || "",
     benefit: readJsonValue(order.jobJson, "benefits") || "",
@@ -2681,7 +2750,6 @@ function buildJobDataFromOrder(order) {
     quantity: order.headcount || order.quantity || "",
     daysOff: readJsonValue(order.jobJson, "days_off") || "Liên hệ",
     work: readJsonValue(order.jobJson, "job_description") || order.title || "Đơn tuyển",
-    back: readJsonValue(order.jobJson, "back_fee") || "",
     source: {
       image_ocr_used: Boolean(order.hasImageData),
       pasted_text_used: Boolean(order.rawText),
@@ -2692,16 +2760,19 @@ function buildJobDataFromOrder(order) {
 function buildRawTextFromOrder(order) {
   const jobData = buildJobDataFromOrder(order);
   const jobTitle = stripEmoji(jobData.jobTitle).replace(/^\s*(?:SOS|🆘)\s*/i, "").trim() || "Đơn tuyển";
-  const salaryLine = jobData.salaryText && jobData.salaryText !== "Liên hệ" ? `💰 LCB: ${jobData.salaryText}` : "💰 LCB";
-  const housingLine = jobData.housing ? `🏡 NHÀ: ${jobData.housing}` : "🏡 NHÀ";
+  const salaryLine = jobData.salaryText && jobData.salaryText !== "Liên hệ" ? `💰 LCB: ${formatMoneyThousands(jobData.salaryText)}` : "💰 LCB";
+  const housingLine = jobData.housing ? `🏡 NHÀ: ${formatMoneyThousands(jobData.housing)}` : "🏡 NHÀ";
+  const backValue = String(order.backFee || jobData.back || "").replace(/\s*man\s*$/i, "").trim();
+  const backLine = backValue ? `🤝 Back: ${backValue} man` : "🤝 Back:";
   const requirementLine = jobData.requirement && jobData.requirement !== "Liên hệ" ? `💢 Yc: ${jobData.requirement}` : "💢 Yc:";
   return [
     `🆘 ${jobTitle} - ${jobData.orderCode}`,
-    jobData.location !== "Chưa rõ" ? jobData.location : "",
+    jobData.location !== "Chưa rõ" ? `📍 ${jobData.location}` : "",
     salaryLine,
     housingLine,
     requirementLine,
-    `SL: ${jobData.quantity || order.headcount || 1}`,
+    `👥 SL: ${jobData.quantity || order.headcount || 1}`,
+    backLine,
   ].filter(Boolean).join("\n");
 }
 
@@ -2735,6 +2806,7 @@ function bindCreateOrderModal() {
   });
 
   document.getElementById("parseOrderButton").addEventListener("click", parseOrderText);
+  document.getElementById("mergeOrderDataButton").addEventListener("click", mergeOrderDataToText);
 
   document.getElementById("clearCreateOrderButton").addEventListener("click", () => {
     resetCreateOrderForm();
@@ -2825,6 +2897,7 @@ function resetCreateCandidateForm() {
   form.elements.stage.value = "Chờ PV";
   form.elements.cvDataUrl.value = "";
   form.elements.cvFileName.value = "";
+  form.elements.cvFiles.value = "";
   document.getElementById("candidateCvFile").value = "";
   setCandidateCvStatus("");
   updateCandidateCvDeleteButton();
@@ -2867,32 +2940,38 @@ function deleteCandidateCvFromForm() {
   const form = document.getElementById("createCandidateForm");
   form.elements.cvDataUrl.value = "__DELETE_CV__";
   form.elements.cvFileName.value = "";
+  form.elements.cvFiles.value = "";
   document.getElementById("candidateCvFile").value = "";
   setCandidateCvStatus("CV sẽ được xóa khi bấm cập nhật.");
   document.getElementById("deleteCandidateCvButton").hidden = true;
 }
 
-function readCandidateCvFile(file, form) {
+function readCandidateCvFiles(files, form) {
   const fileInput = document.getElementById("candidateCvFile");
-  if (!file) return;
-  if (!isAcceptedCvFile(file)) {
+  const selectedFiles = Array.from(files || []);
+  if (!selectedFiles.length) return;
+  if (selectedFiles.some((file) => !isAcceptedCvFile(file))) {
     fileInput.value = "";
     form.elements.cvDataUrl.value = "";
     form.elements.cvFileName.value = "";
     setCandidateCvStatus("Vui lòng chọn PDF hoặc hình ảnh.", true);
     return;
   }
-  const reader = new FileReader();
-  reader.onload = () => {
-    form.elements.cvDataUrl.value = reader.result;
-    form.elements.cvFileName.value = file.name;
-    setCandidateCvStatus(`Đã chọn file ${file.name}`);
-    updateCandidateCvDeleteButton();
-  };
-  reader.onerror = () => {
-    setCandidateCvStatus("Không đọc được file CV.", true);
-  };
-  reader.readAsDataURL(file);
+  if (selectedFiles.length > 1 && selectedFiles.some((file) => !file.type.startsWith("image/"))) {
+    setCandidateCvStatus("Chỉ chọn 1 PDF hoặc nhiều ảnh CV.", true);
+    return;
+  }
+  Promise.all(selectedFiles.map((file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, dataUrl: reader.result });
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  }))).then((items) => {
+    form.elements.cvDataUrl.value = items.length === 1 ? items[0].dataUrl : "";
+    form.elements.cvFileName.value = items.length === 1 ? items[0].name : "";
+    form.elements.cvFiles.value = items.length > 1 ? JSON.stringify(items) : "";
+    setCandidateCvStatus(items.length === 1 ? `Đã chọn file ${items[0].name}` : `Đã chọn ${items.length} ảnh CV.`);
+  }).catch(() => setCandidateCvStatus("Không đọc được file CV.", true));
 }
 
 async function openCreateCandidateModal() {
@@ -2970,17 +3049,13 @@ function bindCreateCandidateModal() {
   document.getElementById("candidateCvDropzone").addEventListener("drop", (event) => {
     event.preventDefault();
     event.currentTarget.classList.remove("is-dragging");
-    readCandidateCvFile(event.dataTransfer.files?.[0], form);
+    readCandidateCvFiles(event.dataTransfer.files, form);
   });
   document.getElementById("candidateCvFile").addEventListener("change", () => {
     const fileInput = document.getElementById("candidateCvFile");
-    readCandidateCvFile(fileInput.files?.[0], form);
+    readCandidateCvFiles(fileInput.files, form);
   });
   document.getElementById("deleteCandidateCvButton").addEventListener("click", deleteCandidateCvFromForm);
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) closeCreateCandidateModal();
-  });
-
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const submitButton = form.querySelector('button[type="submit"]');
@@ -3273,9 +3348,6 @@ function bindCreateCtvModal() {
 
   document.getElementById("closeCreateCtvModal").addEventListener("click", closeCreateCtvModal);
   document.getElementById("cancelCreateCtv").addEventListener("click", closeCreateCtvModal);
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) closeCreateCtvModal();
-  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && dialog.open) closeCreateCtvModal();
   });

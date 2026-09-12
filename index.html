@@ -7,9 +7,9 @@
     <script>
       document.documentElement.dataset.activeSection = localStorage.getItem("activeDashboardSection") || "orders";
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20260908-delete-candidate-cv" />
+    <link rel="stylesheet" href="./styles.css?v=20260912-image-badge-width" />
     <script defer src="https://unpkg.com/lucide@latest"></script>
-    <script defer src="./script.js?v=20260908-orders-pagination"></script>
+    <script defer src="./script.js?v=20260912-order-urgent-badge"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -182,7 +182,7 @@
           <div class="create-input-column">
             <section class="create-panel">
               <h3>Paste text tóm tắt</h3>
-              <textarea id="rawOrderText" placeholder="Dán text đơn vào đây. Ví dụ:&#10;🆘 Nhân viên khách sạn - AGT1&#10;Fukui&#10;💰 LCB: 275,000 yên/tháng&#10;🏡 NHÀ: KTX 20,000 yên&#10;💢 Yc: N4 trở lên&#10;SL: 3"></textarea>
+              <textarea id="rawOrderText" placeholder="Dán text đơn vào đây. Ví dụ:&#10;🆘 Nhân viên khách sạn - AGT1&#10;Fukui&#10;💰 LCB: 275,000 yên/tháng&#10;🏡 NHÀ: KTX 20,000 yên&#10;🤝 Back: 5 man&#10;💢 Yc: N4 trở lên&#10;👥 SL: 3"></textarea>
               <div class="create-button-row">
                 <button id="parseOrderButton" class="primary-button" type="button">Tách dữ liệu</button>
                 <button id="clearCreateOrderButton" class="ghost-button" type="button">Xóa form</button>
@@ -229,6 +229,13 @@
                   <input name="housing" type="text" placeholder="VD: KTX 20,000 yên" />
                 </label>
                 <label>
+                  <span>Back</span>
+                  <span class="input-with-unit">
+                    <input name="backFee" type="number" min="0" step="0.1" inputmode="decimal" placeholder="VD: 10" />
+                    <span aria-hidden="true">man</span>
+                  </span>
+                </label>
+                <label>
                   <span>YC</span>
                   <input name="requirement" type="text" placeholder="VD: Nam, N4 trở lên, kinh nghiệm..." />
                 </label>
@@ -253,6 +260,9 @@
                     <option>Tokutei/Kỹ sư</option>
                   </select>
                 </label>
+              </div>
+              <div class="create-button-row parsed-form-actions">
+                <button id="mergeOrderDataButton" class="ghost-button" type="button">Gộp dữ liệu</button>
               </div>
             </section>
 
@@ -344,11 +354,12 @@
             <button id="candidateCvDropzone" class="cv-upload-dropzone" type="button">
               <i data-lucide="file-plus-2" aria-hidden="true"></i>
               <strong>Upload CV</strong>
-              <small>Bấm để chọn hoặc kéo file vào đây</small>
+              <small>Chọn 1 file PDF hoặc nhiều ảnh CV</small>
             </button>
-            <input id="candidateCvFile" class="visually-hidden-file" type="file" accept="application/pdf,.pdf,image/*" />
+            <input id="candidateCvFile" class="visually-hidden-file" type="file" accept="application/pdf,.pdf,image/*" multiple />
             <input id="candidateCvDataUrl" name="cvDataUrl" type="hidden" />
             <input id="candidateCvFileName" name="cvFileName" type="hidden" />
+            <input id="candidateCvFiles" name="cvFiles" type="hidden" />
             <div class="cv-upload-meta">
               <span id="candidateCvStatus" class="field-hint" aria-live="polite"></span>
               <button id="deleteCandidateCvButton" class="cv-delete-button" type="button" hidden>

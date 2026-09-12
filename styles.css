@@ -585,7 +585,7 @@ select {
 .order-info {
   grid-area: meta;
   display: grid;
-  grid-template-columns: 118px minmax(148px, 176px) 104px max-content 76px;
+  grid-template-columns: 118px minmax(148px, 176px) 104px max-content max-content 96px;
   gap: 8px 10px;
   align-items: center;
   min-width: 0;
@@ -696,6 +696,22 @@ select {
   overflow: visible;
 }
 
+.back-fee-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #ede9fe;
+  color: #6d28d9;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+
 .location-tag > span {
   display: block;
   min-width: 0;
@@ -791,6 +807,7 @@ select {
 }
 
 .badges .image-badge-button {
+  width: 96px;
   cursor: pointer;
 }
 
@@ -806,6 +823,22 @@ select {
 .badge.ok {
   background: #dcfce7;
   color: #166534;
+}
+
+.order-urgent-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+  margin-left: 14px;
 }
 
 .badge.warn {
@@ -1296,6 +1329,9 @@ select {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(300px, .9fr) minmax(420px, 1.1fr);
+  grid-template-areas:
+    "text fields"
+    "image preview";
   gap: 16px;
   padding: 16px;
   overflow: auto;
@@ -1304,10 +1340,23 @@ select {
 
 .create-input-column,
 .create-preview-column {
-  min-width: 0;
-  display: grid;
-  gap: 12px;
-  align-content: start;
+  display: contents;
+}
+
+.create-input-column > .create-panel:first-child {
+  grid-area: text;
+}
+
+.create-input-column > .create-panel:last-child {
+  grid-area: image;
+}
+
+.create-preview-column > .create-panel:first-child {
+  grid-area: fields;
+}
+
+.create-preview-column > .create-panel:last-child {
+  grid-area: preview;
 }
 
 .create-panel {
@@ -1460,6 +1509,43 @@ select {
   padding: 8px 10px;
   color: #222222;
   background: #ffffff;
+}
+
+.input-with-unit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+}
+
+/* Blue distinguishes the right-to-left merge action from the teal parse action. */
+#mergeOrderDataButton {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #ffffff;
+}
+
+#mergeOrderDataButton:hover {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+}
+
+.input-with-unit input {
+  min-width: 0;
+  border-radius: 8px 0 0 8px;
+}
+
+.input-with-unit > span {
+  display: grid;
+  place-items: center;
+  min-width: 48px;
+  padding: 0 10px;
+  border: 1px solid #cfd4dc;
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .json-preview {
@@ -1640,10 +1726,12 @@ select {
 
 .delete-dialog {
   width: min(430px, calc(100vw - 28px));
+  max-width: calc(100vw - 28px);
   padding: 0;
   border: 0;
   border-radius: 8px;
   background: transparent;
+  overflow: hidden;
 }
 
 .delete-dialog::backdrop {
@@ -1653,6 +1741,9 @@ select {
 .delete-dialog-card {
   display: grid;
   gap: 12px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 18px;
   border-radius: 8px;
   background: #ffffff;
@@ -1670,7 +1761,8 @@ select {
 }
 
 .interview-schedule-card {
-  width: min(420px, calc(100vw - 32px));
+  width: min(420px, calc(100vw - 28px));
+  max-width: 100%;
   position: relative;
 }
 
@@ -1764,6 +1856,7 @@ select {
 .interview-schedule-body div {
   display: grid;
   gap: 5px;
+  min-width: 0;
   padding: 12px;
   border: 1px solid #e0e7ef;
   border-radius: 8px;
@@ -1772,6 +1865,7 @@ select {
 
 .interview-schedule-body .interview-status-field select {
   width: 100%;
+  box-sizing: border-box;
   min-height: 38px;
   border: 1px solid #cbd5e1;
   border-radius: 7px;
@@ -1797,6 +1891,7 @@ select {
 
 .interview-schedule-body input {
   width: 100%;
+  box-sizing: border-box;
   min-height: 36px;
   border: 1px solid #cfd4dc;
   border-radius: 8px;
@@ -2786,6 +2881,11 @@ button:disabled {
 
   .create-workspace {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "text"
+      "fields"
+      "image"
+      "preview";
     gap: 10px;
     padding: 10px;
   }
