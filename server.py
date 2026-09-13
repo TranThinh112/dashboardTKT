@@ -1107,6 +1107,8 @@ class MongoStore:
             payload.pop("cvDataUrl", None)
             payload.pop("cvFileName", None)
             payload.pop("cvLink", None)
+            # cvFiles is removed below, so do not also set it to an empty list.
+            payload.pop("cvFiles", None)
             payload["hasCvData"] = False
         update = {"$set": payload}
         unset_fields = {}
