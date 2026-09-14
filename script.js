@@ -11,6 +11,10 @@ const sectionTitles = {
     page: "Quản lý cộng tác viên",
     panel: "Danh sách cộng tác viên",
   },
+  customers: {
+    page: "Quản lý Khách hàng",
+    panel: "Đơn tuyển và ứng viên",
+  },
 };
 
 let imageDataReady = false;
@@ -24,11 +28,14 @@ let pendingDeleteCandidateId = "";
 let pendingDeleteCtvId = "";
 let currentOrders = [];
 let candidateOrderOptions = [];
+// Keep the last known customer order list so this section can render while fresh data loads.
+let customerOrderSnapshot = [];
 let activeSection = localStorage.getItem("activeDashboardSection") || "orders";
 let currentCandidates = [];
 let currentCtvs = [];
 let currentApplications = [];
 let currentMetrics = null;
+let activeCandidateView = "active";
 let sectionRenderToken = 0;
 let candidatesLoaded = false;
 let ctvsLoaded = false;
@@ -305,12 +312,14 @@ async function loadMetrics() {
 }
 
 async function loadCandidateOrderOptions() {
-  return loadCachedApi("order-options", async () => {
+  const orders = await loadCachedApi("order-options", async () => {
     const response = await fetch("/api/order-options");
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || "Không thể tải danh sách đơn");
     return data.orders || [];
   });
+  customerOrderSnapshot = orders;
+  return orders;
 }
 
 async function loadBootstrap() {
@@ -583,6 +592,10 @@ function cleanIndustryLabel(value) {
     .replace(/\s+/g, " ")
     .trim();
   const normalized = normalizeSearchText(label);
+  // Keep explicit compound departments intact (e.g. "CƠ KHÍ - ĐIỆN").
+  // Generic classification must not rewrite a user-provided department into
+  // the broader "Cơ khí/Sản xuất" bucket.
+  if (/co khi/.test(normalized) && /dien/.test(normalized)) return label;
   if (/xay dung|cot thep|gian giao|cong trinh|be tong|cong truong|chong tham|tkt/.test(normalized)) return "Xây dựng";
   if (/co khi|han|san xuat|factory|may/.test(normalized)) return "Cơ khí/Sản xuất";
   if (/khach san|ve sinh|vstn|don dep/.test(normalized)) return "Khách sạn";
@@ -590,9 +603,57 @@ function cleanIndustryLabel(value) {
   return label || "Chưa có ngành";
 }
 
+function parseOrderTitleParts(value) {
+  const title = stripEmoji(value)
+    .replace(/^\s*(?:jp)+\s*/i, "")
+    .trim();
+  // Some copied Japan flags become visible "JP" text or variation bytes.
+  // Match the known order type anywhere in the first line so this prefix can
+  // never be stored as part of the recruitment position.
+  const match = title.match(/(?:^|.*?\b)(tokutei\s*\/\s*kỹ\s*sư|tokutei|kỹ\s*sư)\s*[-–]\s*(.+)$/i);
+  if (!match) return { title, orderType: "Đơn tuyển", industry: "" };
+
+  const orderType = match[1]
+    .replace(/\s*\/\s*/g, "/")
+    .replace(/kỹ\s*sư/i, "Kỹ sư")
+    .replace(/tokutei/i, "Tokutei");
+  const detail = match[2].trim();
+  const isEngineer = /kỹ\s*sư/i.test(orderType);
+  return {
+    // Tokutei titles use the detail as the actual position; engineer orders
+    // keep "Kỹ sư" as the position and use the detail as department.
+    title: isEngineer ? orderType : detail,
+    orderType,
+    industry: isEngineer ? detail : inferIndustryFromTitle(detail),
+  };
+}
+
+function inferIndustryFromTitle(value) {
+  const label = String(value || "").trim();
+  const normalized = normalizeSearchText(label);
+  // The business rule gives every production order one shared industry,
+  // regardless of the item being manufactured.
+  if (/san xuat/.test(normalized)) return "Cơ khí/Sản xuất";
+  if (/dong goi|bao bi|cong nghiep/.test(normalized)) return "Cơ khí/Sản xuất";
+  if (/dien tu|linh kien dien/.test(normalized)) return "Điện/Điện tử";
+  return label;
+}
+
+function parseHeadcount(value) {
+  const text = String(value || "");
+  const genderCounts = [...text.matchAll(/(\d+)\s*(?:nam|nữ|nu)(?=\s*[,;/]|\s*$)/gi)].map((match) => Number(match[1]));
+  if (genderCounts.length) return genderCounts.reduce((total, count) => total + count, 0);
+  const firstNumber = text.match(/\d+/);
+  return firstNumber ? Number(firstNumber[0]) : "";
+}
+
 function parseCompactOrderText(raw) {
   const lines = normalizeText(raw).split(/\r?\n/).map(stripEmoji).filter(Boolean);
   if (lines.length < 2) return null;
+
+  // Full pasted order text has a separate code label; let the rule parser
+  // handle its title/type/industry instead of treating the title as compact.
+  if (lines.some((line) => /^Mã\s*(?:đơn hàng|đơn|đh)\s*:/i.test(line))) return null;
 
   const firstLine = lines[0].replace(/\s*\([^)]*\)\s*$/g, "").trim();
   const firstMatch = firstLine.match(/^(.*?)\s*[-–]\s*([A-Za-z0-9._/-]+)\s*$/);
@@ -657,11 +718,18 @@ function parseRawTextByRules(raw) {
   if (compactOrder) return compactOrder;
 
   const lines = raw.split(/\r?\n/).map(stripEmoji).filter(Boolean);
-  const title = lines[0] || "Đơn tuyển";
+  // Status/notes (for example "GẤP !!! PVAN THỨ 6 HÀNG TUẦN") can precede
+  // the actual order title. Select the first line that declares its type.
+  const titleLine = lines.find((line) => /(?:tokutei|kỹ\s*sư)/i.test(line) && /[-–]/.test(line)) || lines[0] || "Đơn tuyển";
+  const titleParts = parseOrderTitleParts(titleLine);
+  const title = titleParts.title || "Đơn tuyển";
   const orderCode = findValue(raw, [/Mã\s*(?:đơn hàng|đơn|đh)\s*:\s*([^\n]+)/i]) || "Chưa có";
   const location = findValue(raw, [/Tỉnh\s*:\s*([^\n]+)/i, /Nơi Làm Việc\s*([^\n]+)/i, /Nơi làm việc\s*:\s*([^\n]+)/i, /Địa điểm\s*:\s*([^\n]+)/i, /Khu vực\s*:\s*([^\n]+)/i]) || "Chưa rõ";
-  const quantity = findValue(raw, [/Tuyển\s*:?\s*([0-9]+)/i, /Số Lượng Tuyển\s*([0-9]+)/i, /Số lượng\s*:\s*([0-9]+)/i]);
-  const salaryText = findValue(raw, [/Lương\s*:\s*([^\n]+)/i, /Lương\s*Trợ cấp\s*([^\n]+)/i]) || "Liên hệ";
+  const quantityText = findValue(raw, [/Tuyển\s*:?\s*([^\n]+)/i, /Số Lượng Tuyển\s*([^\n]+)/i, /Số lượng\s*:\s*([^\n]+)/i]);
+  const quantity = parseHeadcount(quantityText);
+  const salaryText = (findValue(raw, [/Lương\s*:\s*([^\n]+)/i, /Lương\s*Trợ cấp\s*([^\n]+)/i]) || "Liên hệ")
+    .replace(/^lcb\s*[:\-]?\s*/i, "")
+    .trim();
   const requirement = findValue(raw, [/Yêu cầu\s*:\s*([^\n]+)/i, /Điều Kiện[\s\S]*?\(Ghi chú thêm\)\s*([^\n]+)/i]) || "Liên hệ";
   const work = findValue(raw, [/Nội dung công việc\s*:\s*([^\n]+)/i, /Công việc\s*:\s*([^\n]+)/i]) || title;
   const back = findValue(raw, [/Back\s*:\s*([^\n]+)/i]) || "";
@@ -674,14 +742,14 @@ function parseRawTextByRules(raw) {
   const japaneseMatch = requirement.match(/N[1-5]/i);
   const salaryNumber = salaryText.match(/[\d,.]+/);
   const salaryPeriod = /giờ|gio/i.test(salaryText) ? "giờ" : (/tháng|thang/i.test(salaryText) ? "tháng" : (/năm|nam/i.test(salaryText) ? "năm" : ""));
-  const titleParts = title.replace(/-/g, " - ").split("-").map((part) => part.trim()).filter(Boolean);
-  const industryText = findValue(raw, [/Nhóm ngành\s*:\s*([^\n]+)/i, /Ngành\s*:\s*([^\n]+)/i]) || titleParts[0] || title;
-  const industries = splitIndustries(industryText);
-  const industry = industries[0] || industryText;
+  const explicitIndustry = findValue(raw, [/Nhóm ngành\s*:\s*([^\n]+)/i, /Ngành\s*:\s*([^\n]+)/i]);
+  const industryText = explicitIndustry || titleParts.industry;
+  const industries = industryText ? [industryText] : [];
+  const industry = industryText || "";
 
   return {
     orderCode,
-    orderType: "Đơn tuyển",
+    orderType: titleParts.orderType,
     industry,
     industries,
     jobTitle: title,
@@ -698,7 +766,7 @@ function parseRawTextByRules(raw) {
     salaryNumber: salaryNumber ? salaryNumber[0] : "",
     salaryPeriod,
     interview: interview || "Liên hệ",
-    quantity: quantity ? Number(quantity) : "",
+    quantity,
     daysOff: daysOff || "Liên hệ",
     work,
     back,
@@ -934,6 +1002,17 @@ function parseOrderText() {
   const rawText = rawTextElement.value.trim();
   if (!rawText) return;
   const data = parseRawTextByRules(rawText);
+  // A full pasted order can resemble the compact format. Always give a
+  // labeled order its explicit title structure precedence at the UI boundary.
+  if (/^Mã\s*(?:đơn hàng|đơn|đh)\s*:/im.test(rawText) || /\bKỹ\s*sư\b/i.test(rawText.split(/\r?\n/)[0])) {
+    const titleParts = parseOrderTitleParts(rawText.split(/\r?\n/)[0]);
+    if (titleParts.orderType !== "Đơn tuyển") {
+      data.jobTitle = titleParts.title;
+      data.orderType = titleParts.orderType;
+      data.industry = titleParts.industry;
+      data.industries = titleParts.industry ? [titleParts.industry] : [];
+    }
+  }
   setCreateOrderFields({
     code: data.orderCode === "Chưa có" ? "" : data.orderCode,
     title: data.jobTitle,
@@ -947,7 +1026,7 @@ function parseOrderText() {
     headcount: data.quantity,
   });
   // A compact paste has no reliable industry information; clear any stale value.
-  if (data.source?.compact_text_used) document.getElementById("createOrderForm").elements.department.value = "";
+  if (data.source?.compact_text_used && !data.industry) document.getElementById("createOrderForm").elements.department.value = "";
   imageDataReady = document.getElementById("imagePasteBox").querySelector("img") !== null;
   updateCreateImageBadges();
   updateCreatePreview();
@@ -1556,13 +1635,20 @@ function renderCandidateIndustryTags(candidate, application) {
 }
 
 function getCandidateStatus(candidate, application) {
-  const value = normalizeSearchText(application?.stage || application?.status || candidate.stage || candidate.status || "");
+  const value = normalizeSearchText(application?.stage || application?.status || candidate?.stage || candidate?.status || "");
   if (/da nhan tien/.test(value)) return "Đã nhận tiền";
   if (/bo don/.test(value)) return "Bỏ đơn";
   if (/truot pv|rot pv|khong dat/.test(value)) return "Trượt PV";
   if (/dau pv|dat pv|pass pv/.test(value)) return "Đậu PV";
   if (/hoan thanh|nhan viec|offer|ve cty xong/.test(value)) return "Hoàn thành";
   if (/cho ve cty|ve cty|dang ve|len cty/.test(value)) return "Chờ về Cty";
+  if (application?.interviewAt) {
+    const interviewDate = new Date(application.interviewAt);
+    if (!Number.isNaN(interviewDate.getTime())) {
+      return `Đã có lịch (${interviewDate.getDate()}/${interviewDate.getMonth() + 1}/${String(interviewDate.getFullYear()).slice(-2)})`;
+    }
+  }
+  if (application?.interviewLink || application?.interviewUrl || application?.meetingLink) return "Đã có lịch PV";
   return "Chờ PV";
 }
 
@@ -1574,6 +1660,7 @@ function getCandidateStatusClass(status) {
   if (/dau pv|dat pv|pass pv/.test(value)) return "passed";
   if (/hoan thanh/.test(value)) return "done";
   if (/cho ve cty/.test(value)) return "returning";
+  if (/da co lich/.test(value)) return "scheduled";
   return "interview";
 }
 
@@ -1600,6 +1687,10 @@ function getCandidateCtvLink(candidate, application) {
 
 function getCandidateJoinedAt(candidate, application) {
   return application?.appliedAt || application?.createdAt || candidate.appliedAt || candidate.createdAt || "";
+}
+
+function getCandidateDroppedAt(candidate, application) {
+  return application?.droppedAt || application?.cancelledAt || application?.resultAt || application?.updatedAt || candidate?.droppedAt || candidate?.updatedAt || "";
 }
 
 function formatShortDate(value) {
@@ -1838,6 +1929,8 @@ function renderCandidateTable(candidates) {
   const visibleCandidates = [...candidates]
     .filter((candidate) => {
       const application = getCandidateApplication(candidate);
+      const isBlacklisted = getCandidateStatus(candidate, application) === "Bỏ đơn";
+      if (activeCandidateView === "blacklist" ? !isBlacklisted : isBlacklisted) return false;
       const matchesSearch = !query || normalizeSearchText([
         candidate.fullName || candidate.name,
         getCandidateOrderLabel(candidate, application),
@@ -1863,7 +1956,12 @@ function renderCandidateTable(candidates) {
 
   const stages = ["Chờ PV", "Chờ về cty", "Hoàn thành"];
 
+  const isBlacklist = activeCandidateView === "blacklist";
   list.innerHTML = `
+    <div class="candidate-view-tabs" role="tablist" aria-label="Danh sách ứng viên">
+      <button class="candidate-view-tab${!isBlacklist ? " is-active" : ""}" type="button" data-candidate-view="active">Ứng viên</button>
+      <button class="candidate-view-tab${isBlacklist ? " is-active" : ""}" type="button" data-candidate-view="blacklist">Danh sách đen</button>
+    </div>
     <div class="clean-toolbar">
       <label class="clean-search">Tìm ứng viên
         <input id="candidateSearch" type="search" value="${escapeHtml(search)}" placeholder="Tên, đơn, ngành, trạng thái...">
@@ -1893,7 +1991,7 @@ function renderCandidateTable(candidates) {
         <span></span>
         <span>Ứng viên</span>
         <span>Mã đơn</span>
-        <span>Ngành</span>
+        <span>${isBlacklist ? "Ngày bỏ" : "Ngành"}</span>
         <span>Trạng thái</span>
         <span>CTV</span>
         <span>CV</span>
@@ -1922,7 +2020,7 @@ function renderCandidateTable(candidates) {
               </span>
               ${renderCandidateNameCell(candidate, zaloLink)}
               ${renderCandidateOrderCell(candidate, application)}
-              ${renderCandidateIndustryCell(candidate, application)}
+              ${isBlacklist ? `<span class="candidate-date-cell">${escapeHtml(formatShortDate(getCandidateDroppedAt(candidate, application)))}</span>` : renderCandidateIndustryCell(candidate, application)}
               <span class="candidate-status-cell">${renderCandidateStatusControl(candidate, application)}</span>
               <span class="candidate-ctv-cell">
                 ${ctvLink ? `<a class="table-link name-link" href="${escapeHtml(ctvLink)}" target="_blank" rel="noopener">${escapeHtml(ctvName)}</a>` : escapeHtml(ctvName)}
@@ -1939,6 +2037,11 @@ function renderCandidateTable(candidates) {
         .join("")}
     </div>
   `;
+  list.querySelectorAll("[data-candidate-view]").forEach((button) => button.addEventListener("click", () => {
+    if (activeCandidateView === button.dataset.candidateView) return;
+    activeCandidateView = button.dataset.candidateView;
+    renderCandidateTable(currentCandidates);
+  }));
   list.querySelectorAll("[data-candidate-order-code]").forEach((button) => {
     button.addEventListener("click", async () => {
       const order = candidateOrderOptions.find((item) => item.code === button.dataset.candidateOrderCode);
@@ -2179,6 +2282,104 @@ function renderCtvLoadingTable() {
   `;
 }
 
+function getOrderCodeGroup(code) {
+  const prefix = String(code || "").trim().match(/^[A-Za-z]+/)?.[0]?.toUpperCase();
+  return prefix || "Số";
+}
+
+function compareOrderCodes(left, right) {
+  const leftCode = String(left || "").trim();
+  const rightCode = String(right || "").trim();
+  const leftIsNumber = /^\d/.test(leftCode);
+  const rightIsNumber = /^\d/.test(rightCode);
+  if (leftIsNumber !== rightIsNumber) return leftIsNumber ? 1 : -1;
+  return leftCode.localeCompare(rightCode, "en", { numeric: true, sensitivity: "base" });
+}
+
+function renderCustomerManagement() {
+  const list = document.getElementById("orderList") || document.getElementById("ordersList");
+  const customerOrders = candidateOrderOptions.length ? candidateOrderOptions : customerOrderSnapshot;
+  const candidatesById = new Map(currentCandidates.map((candidate) => [candidate.id, candidate]));
+  const groupedOrders = customerOrders.reduce((groups, order) => {
+    const group = getOrderCodeGroup(order.code);
+    (groups[group] ||= []).push(order);
+    return groups;
+  }, {});
+  const applicationsByOrder = currentApplications.reduce((applications, application) => {
+    const code = application.orderCode || "";
+    (applications[code] ||= []).push(application);
+    return applications;
+  }, {});
+  const groups = Object.keys(groupedOrders).sort((left, right) => {
+    if (left === "Số") return 1;
+    if (right === "Số") return -1;
+    return left.localeCompare(right);
+  });
+
+  if (!groups.length) {
+    list.innerHTML = `<article class="customer-empty"><strong>Chưa có đơn tuyển dụng.</strong></article>`;
+    return;
+  }
+
+  const customerGroups = [{ key: "all", label: "Tất cả đơn", orders: customerOrders }, ...groups.map((group) => ({ key: group, label: group, orders: groupedOrders[group] }))];
+  const orderCardMarkup = (orders) => orders.sort((left, right) => compareOrderCodes(left.code, right.code)).map((order) => {
+    const code = order.code;
+    const applications = applicationsByOrder[code] || [];
+    const title = order.title || "Chưa có tên đơn";
+    const codeMarkup = order.hasImage
+      ? `<button class="customer-order-code has-image" type="button" data-customer-order-code="${escapeHtml(code)}" title="Xem ảnh đơn">${escapeHtml(code)}</button>`
+      : `<strong class="customer-order-code">${escapeHtml(code)}</strong>`;
+    const candidates = applications.map((application) => {
+      const candidate = candidatesById.get(application.candidateId);
+      const name = candidate?.fullName || application.candidateName || "Chưa có tên";
+      const stage = getCandidateStatus(candidate, application);
+      const hasCv = Boolean(getCandidateCvLink(candidate, application));
+      const nameMarkup = hasCv
+        ? `<button class="customer-candidate-name has-cv" type="button" data-customer-cv-id="${escapeHtml(candidate?.id || "")}">${escapeHtml(name)}</button>`
+        : `<span class="customer-candidate-name">${escapeHtml(name)}</span>`;
+      return `<li>${nameMarkup}<span class="candidate-status ${getCandidateStatusClass(stage)}">${escapeHtml(stage)}</span></li>`;
+    }).join("") || `<li class="customer-no-candidates">Chưa có ứng viên</li>`;
+    return `<article class="customer-order-card" data-customer-has-image="${order.hasImage ? "true" : "false"}"><header><div>${codeMarkup}<span>${escapeHtml(title)}</span></div><b>${applications.length} ứng viên</b></header><ul>${candidates}</ul></article>`;
+  }).join("");
+  const groupTabs = customerGroups.map((group, index) => `<button class="customer-group-tab${index === 0 ? " is-active" : ""}" type="button" data-customer-group="${escapeHtml(group.key)}">${escapeHtml(group.label)}</button>`).join("");
+  const groupPanels = customerGroups.map((group, index) => {
+    const orderCards = orderCardMarkup([...group.orders]);
+    return `<section class="customer-group-panel${index === 0 ? " is-active" : ""}" data-customer-panel="${escapeHtml(group.key)}">${orderCards}</section>`;
+  }).join("");
+
+  list.innerHTML = `<section class="customer-management"><div class="customer-management-head"><label>Hiển thị ảnh<select id="customerImageFilter"><option value="all">Tất cả đơn</option><option value="has-image">Có ảnh</option><option value="no-image">Chưa có ảnh</option></select></label><output id="customerImageCount" class="customer-image-count" aria-live="polite"></output></div><div class="customer-group-tabs" role="tablist" aria-label="Nhóm mã đơn">${groupTabs}</div>${groupPanels}</section>`;
+  const applyCustomerImageFilter = () => {
+    const filter = document.getElementById("customerImageFilter").value;
+    const activePanel = list.querySelector(".customer-group-panel.is-active");
+    const cards = [...(activePanel?.querySelectorAll(".customer-order-card") || [])];
+    cards.forEach((card) => {
+      card.hidden = filter !== "all" && (filter === "has-image") !== (card.dataset.customerHasImage === "true");
+    });
+    document.getElementById("customerImageCount").textContent = filter === "all" ? "" : `${cards.filter((card) => !card.hidden).length} đơn`;
+  };
+  list.querySelectorAll("[data-customer-group]").forEach((tab) => tab.addEventListener("click", () => {
+    const group = tab.dataset.customerGroup;
+    list.querySelectorAll("[data-customer-group]").forEach((item) => item.classList.toggle("is-active", item === tab));
+    list.querySelectorAll("[data-customer-panel]").forEach((panel) => panel.classList.toggle("is-active", panel.dataset.customerPanel === group));
+    applyCustomerImageFilter();
+  }));
+  list.querySelectorAll("[data-customer-cv-id]").forEach((button) => button.addEventListener("click", () => openCandidateCvById(button.dataset.customerCvId)));
+  list.querySelectorAll("[data-customer-order-code]").forEach((button) => button.addEventListener("click", async () => {
+    const order = customerOrders.find((item) => item.code === button.dataset.customerOrderCode);
+    if (!order) return;
+    button.disabled = true;
+    try {
+      const detail = await ensureOrderDetail(order);
+      if (detail.imageDataUrl) openImageLightbox(detail.imageDataUrl);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      button.disabled = false;
+    }
+  }));
+  document.getElementById("customerImageFilter").addEventListener("change", applyCustomerImageFilter);
+}
+
 async function renderActiveSection() {
   const renderToken = ++sectionRenderToken;
   const section = activeSection;
@@ -2211,6 +2412,19 @@ async function renderActiveSection() {
     return;
   }
 
+  if (section === "customers") {
+    // Show the last rendered state immediately; request fresh data without holding up navigation.
+    renderCustomerManagement();
+    const [candidates, applications, orders] = await Promise.all([loadCandidates(), loadApplications(), loadCandidateOrderOptions()]);
+    if (renderToken !== sectionRenderToken || activeSection !== section) return;
+    currentCandidates = candidates;
+    currentApplications = applications;
+    candidateOrderOptions = orders;
+    candidatesLoaded = true;
+    renderCustomerManagement();
+    return;
+  }
+
   if (ctvsLoaded) {
     renderCtvTable(currentCtvs);
     return;
@@ -2239,14 +2453,14 @@ async function refreshDashboard() {
       return;
     }
 
-    const bootstrap = activeSection === "candidates"
+    const bootstrap = ["candidates", "customers"].includes(activeSection)
       ? await Promise.all([loadDashboard(), loadCandidates(), loadApplications(), loadCtvs()])
       : null;
     const data = bootstrap?.[0] || await loadDashboard();
     currentOrders = data.orders;
     orderPagination = data.pagination || orderPagination;
     currentOrderPage = orderPagination.page;
-    if (bootstrap && activeSection === "candidates") {
+    if (bootstrap && ["candidates", "customers"].includes(activeSection)) {
       currentCandidates = bootstrap[1] || [];
       currentApplications = bootstrap[2] || [];
       currentCtvs = bootstrap[3] || [];
@@ -2307,6 +2521,7 @@ function updateTopbarCreateButton() {
   const label = button?.querySelector("span");
   if (!button || !label) return;
 
+  button.hidden = activeSection === "customers";
   if (activeSection === "candidates") {
     label.textContent = "Thêm UV";
     button.setAttribute("aria-label", "Thêm ứng viên");
@@ -3292,6 +3507,7 @@ async function saveInterviewSchedule() {
     application.interviewAt = interviewAt;
     application.interviewLink = interviewLink;
     application.stage = candidateStage;
+    if (candidateStage === "Bỏ đơn" && currentStage !== "Bỏ đơn") application.droppedAt = new Date().toISOString();
     const stageElement = document.getElementById("interviewCandidateStage");
     stageElement.textContent = candidateStage;
     stageElement.className = `candidate-status ${getCandidateStatusClass(candidateStage)}`;

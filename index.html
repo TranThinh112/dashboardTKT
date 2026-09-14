@@ -7,20 +7,20 @@
     <script>
       document.documentElement.dataset.activeSection = localStorage.getItem("activeDashboardSection") || "orders";
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20260912-image-badge-width" />
+    <link rel="stylesheet" href="./styles.css?v=20260914-blacklist-tab" />
     <script defer src="https://unpkg.com/lucide@latest"></script>
-    <script defer src="./script.js?v=20260912-order-urgent-badge"></script>
+    <script defer src="./script.js?v=20260914-blacklist-tab2"></script>
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar" aria-label="Điều hướng chính">
         <div class="brand">
           <div class="brand-mark">
-            <i data-lucide="briefcase-business" aria-hidden="true"></i>
+            <i data-lucide="hard-hat" aria-hidden="true"></i>
+            <span class="japan-flag" aria-hidden="true"></span>
           </div>
           <div>
-            <strong>TuyểnDụng Pro</strong>
-            <span>Recruitment CRM</span>
+            <strong>Tuyển Dụng TPD</strong>
           </div>
         </div>
 
@@ -36,6 +36,10 @@
           <button class="nav-item" type="button" data-section="collaborators">
             <i data-lucide="handshake" aria-hidden="true"></i>
             <span>Quản lý cộng tác viên</span>
+          </button>
+          <button class="nav-item" type="button" data-section="customers">
+            <i data-lucide="building-2" aria-hidden="true"></i>
+            <span>Quản lý Khách hàng</span>
           </button>
         </nav>
 

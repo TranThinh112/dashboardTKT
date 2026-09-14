@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from zoneinfo import ZoneInfo
 
 from bson import ObjectId
 from dotenv import load_dotenv
@@ -26,6 +27,7 @@ MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "recruitment_dashboard").strip()
 SERVER_HOST = "0.0.0.0" if os.getenv("PORT") else os.getenv("SERVER_HOST", "localhost").strip()
 SERVER_PORT = int(os.getenv("PORT") or os.getenv("SERVER_PORT", "5173"))
 CACHE_TTL_SECONDS = 3600
+VIETNAM_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 DEBUG_API_TIMING = os.getenv("DEBUG_API_TIMING", "0") == "1"
 response_cache = {}
 response_cache_lock = Lock()
@@ -119,6 +121,7 @@ APPLICATION_LIST_PROJECTION = {
     "interviewUrl": 1,
     "meetingLink": 1,
     "resultAt": 1,
+    "droppedAt": 1,
     "createdAt": 1,
     "updatedAt": 1,
 }
@@ -184,11 +187,17 @@ def cached_response(name, loader, query=None):
         return data
 
 def utc_now():
-    return datetime.now(timezone.utc)
+    """Return Vietnam local time for timestamps shown and stored by this app."""
+    return datetime.now(VIETNAM_TIMEZONE).replace(tzinfo=None)
 
 
 def iso_datetime(value):
     if isinstance(value, datetime):
+        # Records created before the Vietnam-time migration are UTC instants.
+        # Convert them at the API boundary; new records are stored as local
+        # Vietnam wall-clock values so all dashboard timestamps stay consistent.
+        if value.tzinfo is not None:
+            return value.astimezone(VIETNAM_TIMEZONE).replace(tzinfo=None).isoformat()
         return value.isoformat()
     return value or ""
 
@@ -1008,8 +1017,9 @@ class MongoStore:
                 "industry": item.get("industry", ""),
                 "industries": item.get("industries", []),
                 "orderType": item.get("orderType", ""),
+                "hasImage": bool(item.get("hasImage") or item.get("imageDataUrl") or item.get("imageUrl")),
             }
-            for item in self.db.orders.find({}, {"code": 1, "title": 1, "department": 1, "industry": 1, "industries": 1, "orderType": 1}).sort("code", ASCENDING)
+            for item in self.db.orders.find({}, {"code": 1, "title": 1, "department": 1, "industry": 1, "industries": 1, "orderType": 1, "hasImage": 1, "imageDataUrl": 1, "imageUrl": 1}).sort("code", ASCENDING)
         ]}
 
     def create_order(self, data):
@@ -1291,6 +1301,7 @@ class MongoStore:
                 "interviewAt": iso_datetime(item.get("interviewAt")),
                 "interviewLink": item.get("interviewLink") or item.get("interviewUrl") or item.get("meetingLink") or "",
                 "resultAt": iso_datetime(item.get("resultAt")),
+                "droppedAt": iso_datetime(item.get("droppedAt")),
                 "createdAt": iso_datetime(item.get("createdAt")),
                 "updatedAt": iso_datetime(item.get("updatedAt")),
             })
@@ -1299,6 +1310,8 @@ class MongoStore:
     def create_application(self, data):
         payload = normalize_application_payload(data)
         payload["createdAt"] = utc_now()
+        if str(payload.get("stage", "")).strip().lower() == "bỏ đơn":
+            payload["droppedAt"] = payload["createdAt"]
         result = self.db.applications.insert_one(payload)
         return {"ok": True, "id": doc_id(result.inserted_id)}
 
@@ -1307,6 +1320,11 @@ class MongoStore:
         payload = normalize_application_payload(data)
         if not data.get("appliedAt"):
             payload.pop("appliedAt", None)
+        existing = self.db.applications.find_one({"_id": object_id}, {"stage": 1, "droppedAt": 1}) or {}
+        if str(payload.get("stage", "")).strip().lower() == "bỏ đơn" and str(existing.get("stage", "")).strip().lower() != "bỏ đơn":
+            payload["droppedAt"] = utc_now()
+        elif existing.get("droppedAt"):
+            payload["droppedAt"] = existing["droppedAt"]
         result = self.db.applications.update_one({"_id": object_id}, {"$set": payload})
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy lượt ứng tuyển.")

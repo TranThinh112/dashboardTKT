@@ -97,8 +97,9 @@ button {
 }
 
 .brand-mark {
-  width: 38px;
+  width: 46px;
   height: 38px;
+  position: relative;
   border-radius: 8px;
   display: grid;
   place-items: center;
@@ -106,9 +107,226 @@ button {
   color: #ffffff;
 }
 
+.brand-mark svg {
+  width: 23px;
+  height: 23px;
+  margin-right: 8px;
+}
+
+.japan-flag {
+  position: absolute;
+  right: 5px;
+  top: 7px;
+  width: 16px;
+  height: 11px;
+  border: 1px solid rgba(15, 23, 42, .18);
+  border-radius: 1px;
+  background: radial-gradient(circle at center, #e11d48 0 36%, #ffffff 38%);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .2);
+}
+
 .main-nav {
   display: grid;
   gap: 8px;
+}
+
+.customer-management {
+  display: grid;
+  gap: 16px;
+}
+
+.customer-management-head {
+  display: flex;
+  justify-content: flex-start;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.customer-management-head label {
+  display: grid;
+  gap: 5px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.customer-management-head select {
+  min-width: 150px;
+  min-height: 36px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #ffffff;
+  color: #1e293b;
+  font: inherit;
+  font-weight: 700;
+}
+
+.customer-image-count {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f766e;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.customer-image-count:empty {
+  display: none;
+}
+
+.customer-group-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #dbe3ec;
+}
+
+.customer-group-tab {
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: #ffffff;
+  color: #475569;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.customer-group-tab.is-active {
+  border-color: #0f766e;
+  background: #e6fffb;
+  color: #0f766e;
+}
+
+.customer-group-panel {
+  display: none;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.customer-group-panel.is-active {
+  display: grid;
+}
+
+.customer-order-card,
+.customer-empty {
+  border: 1px solid #dbe3ec;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 14px;
+}
+
+.customer-order-card header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.customer-order-card header div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.customer-order-card header strong {
+  color: #0f766e;
+  font-size: 15px;
+}
+
+.customer-order-code {
+  display: inline-flex;
+  width: fit-content;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #475569;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.customer-order-code.has-image {
+  color: #1877f2;
+  cursor: pointer;
+}
+
+.customer-order-code.has-image:hover {
+  color: #0f5fc6;
+  text-decoration: underline;
+}
+
+.customer-order-card header span {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.customer-order-card header b {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+}
+
+.customer-order-card ul {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.customer-order-card li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.customer-candidate-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #111827;
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.customer-candidate-name.has-cv {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #1877f2;
+  cursor: pointer;
+}
+
+.customer-candidate-name.has-cv:hover {
+  color: #0f5fc6;
+  text-decoration: underline;
+}
+
+.customer-order-card .customer-no-candidates {
+  justify-content: flex-start;
+  color: #94a3b8;
+  font-style: italic;
 }
 
 .nav-item {
@@ -1010,6 +1228,7 @@ select {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   white-space: nowrap;
 }
 
@@ -1039,6 +1258,11 @@ select {
 .candidate-status.interview {
   background: #dbeafe;
   color: #1d4ed8;
+}
+
+.candidate-status.scheduled {
+  background: #ccfbf1;
+  color: #0f766e;
 }
 
 .candidate-status.returning {
@@ -1107,6 +1331,28 @@ select {
   grid-column: span 1;
 }
 
+.candidate-view-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.candidate-view-tab {
+  border: 1px solid #cfd8e5;
+  border-radius: 8px;
+  background: #fff;
+  color: #526078;
+  padding: 8px 14px;
+  font: 700 13px "Segoe UI", Arial, sans-serif;
+  cursor: pointer;
+}
+
+.candidate-view-tab.is-active {
+  border-color: #1877f2;
+  background: #eaf3ff;
+  color: #1261c9;
+}
+
 .ctv-table .clean-table-head,
 .ctv-table .clean-table-row {
   grid-template-columns: minmax(80px, .45fr) minmax(240px, 1.5fr) minmax(150px, .85fr) minmax(130px, .65fr) minmax(76px, .38fr) minmax(64px, .34fr);
@@ -1114,11 +1360,11 @@ select {
 
 .candidate-table .clean-table-head,
 .candidate-table .clean-table-row {
-  grid-template-columns: 38px minmax(160px, 1.15fr) minmax(72px, .42fr) minmax(118px, .68fr) minmax(112px, .62fr) minmax(140px, .78fr) minmax(72px, .38fr) minmax(92px, .5fr) minmax(80px, .42fr) minmax(64px, .34fr);
+  grid-template-columns: 36px minmax(150px, 1.1fr) minmax(68px, .4fr) minmax(110px, .62fr) minmax(158px, .85fr) minmax(120px, .65fr) minmax(70px, .36fr) minmax(80px, .42fr) minmax(70px, .36fr) minmax(60px, .3fr);
 }
 
 .candidate-table {
-  min-width: 1240px;
+  min-width: 1120px;
 }
 
 .row-icon-button {
@@ -2478,7 +2724,7 @@ button:disabled {
   }
 
   .main-nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .nav-item {
@@ -2696,7 +2942,7 @@ button:disabled {
   }
 
   .brand-mark {
-    width: 34px;
+    width: 42px;
     height: 34px;
   }
 
@@ -2729,7 +2975,7 @@ button:disabled {
   }
 
   .main-nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
   }
 
