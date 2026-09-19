@@ -42,12 +42,13 @@ let ctvsLoaded = false;
 let activeInterviewApplicationId = "";
 let activeCvObjectUrl = "";
 const API_CACHE_TTL = 60 * 60 * 1000;
-const ORDERS_PER_PAGE = 5;
+const ORDERS_PER_PAGE = 10;
 const ORDER_DETAIL_CACHE_PREFIX = "orderDetail:";
 const apiCache = new Map();
 let orderSearchRenderTimer = 0;
 let currentOrderPage = 1;
 let orderPagination = { page: 1, pageSize: ORDERS_PER_PAGE, total: 0, totalPages: 1 };
+const NOTIFICATIONS_SEEN_AT_KEY = "notificationsSeenAt";
 
 function getCachedApi(key) {
   const item = apiCache.get(key);
@@ -75,6 +76,8 @@ function clearFrontendCache() {
   candidateOrderOptions = [];
   candidatesLoaded = false;
   ctvsLoaded = false;
+  // Refresh the red counter immediately after a successful local change.
+  loadActivities().then(updateNotificationBadge).catch(console.error);
 }
 
 function getOrderDetailCacheKey(code) {
@@ -320,6 +323,50 @@ async function loadCandidateOrderOptions() {
   });
   customerOrderSnapshot = orders;
   return orders;
+}
+
+async function loadActivities() {
+  const response = await fetch("/api/activities");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "Không thể tải thông báo");
+  return data.activities || [];
+}
+
+function updateNotificationBadge(activities) {
+  const seenAt = Number(localStorage.getItem(NOTIFICATIONS_SEEN_AT_KEY) || 0);
+  const unreadCount = activities.filter((activity) => new Date(activity.createdAt).getTime() > seenAt).length;
+  const badge = document.getElementById("notificationBadge");
+  if (!badge) return;
+  badge.hidden = unreadCount === 0;
+  badge.textContent = unreadCount > 9 ? "9+" : String(unreadCount);
+}
+
+async function openNotifications() {
+  const dialog = document.getElementById("notificationsDialog");
+  const list = document.getElementById("notificationsList");
+  list.innerHTML = "<p>Đang tải thông báo...</p>";
+  dialog.showModal();
+  try {
+    const activities = await loadActivities();
+    list.innerHTML = activities.length
+      ? activities.map((activity) => `<article class="notification-item notification-${escapeHtml(activity.category || "update")}"><span class="notification-dot"></span><div><strong>${escapeHtml(activity.message)}</strong><time>${escapeHtml(formatShortDateTime(activity.createdAt))}</time></div></article>`).join("")
+      : "<p class=\"notification-empty\">Chưa có thay đổi nào được ghi nhận.</p>";
+    localStorage.setItem(NOTIFICATIONS_SEEN_AT_KEY, String(Date.now()));
+    updateNotificationBadge(activities);
+  } catch (error) {
+    list.innerHTML = `<p class="notification-empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function bindNotifications() {
+  const dialog = document.getElementById("notificationsDialog");
+  document.getElementById("openNotifications").addEventListener("click", openNotifications);
+  document.getElementById("closeNotifications").addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  loadActivities().then(updateNotificationBadge).catch(console.error);
+  window.setInterval(() => loadActivities().then(updateNotificationBadge).catch(console.error), 30000);
 }
 
 async function loadBootstrap() {
@@ -801,7 +848,7 @@ function formatMoneyThousands(text) {
 
 function shortenFacebookWords(text) {
   return String(text || "")
-    .replace(/k[yỹĩ]\s*s[uư]/gi, "KS")
+    .replace(/k[yỹĩ]\s*s[uư]/gi, "KSư")
     .replace(/qu[aả]n\s*l[yý]/gi, "Qly")
     .replace(/y[eê]u\s*c[aầ]u/gi, "yc")
     .replace(/th[uư][oở]ng/gi, "thg")
@@ -825,7 +872,7 @@ function cleanJobTitle(text) {
     .trim();
   if (/kh[aá]ch\s*s[aạ]n/i.test(title) && /(d[oọ]n\s*d[eẹ]p|v[eệ]\s*sinh|ph[oò]ng)/i.test(title)) return "VSTN";
   if (/c[oố]t\s*th[eé]p/i.test(title)) return "Cốt thép";
-  if (/(k[yỹĩ]\s*s[uư]|KS|qu[aả]n\s*l[yý]|Qly)/i.test(title) && /c[oô]ng\s*tr[iì]nh/i.test(title)) return "KS Qly công trình";
+  if (/(k[yỹĩ]\s*s[uư]|KSư|qu[aả]n\s*l[yý]|Qly)/i.test(title) && /c[oô]ng\s*tr[iì]nh/i.test(title)) return "KSư Qly công trình";
   return title;
 }
 
@@ -877,8 +924,10 @@ function makeShortText(data) {
   const salaryExtra = shortenFacebookWords(salaryParts.extra).replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
   const jobTitle = shortenFacebookWords(cleanJobTitle(data.jobTitle));
   const location = shortenLocation(data.location);
-  const requirement = splitRequirementNote(shortenRequirementNote(normalizeJapaneseLevel(shortenFacebookWords(data.requirement))));
-  const requirementLine = [`YC: ${requirement.main}`, requirement.note].filter(Boolean).join(" ");
+  // Preview must reflect the exact YC entered in the form. Do not infer
+  // "trở lên" from N-levels because it can change the order's requirement.
+  const requirement = shortenRequirementNote(shortenFacebookWords(data.requirement));
+  const requirementLine = `YC: ${requirement}`;
   const detailLine = [salary.replace(/\s*$/, "").replace(/[.!?]$/, ""), salaryExtra, requirementLine].filter(Boolean).join(". ");
   return [jobTitle, location, detailLine].filter(Boolean).map((line) => line.toUpperCase()).join("\n");
 }
@@ -1480,7 +1529,7 @@ function renderOrders(orders) {
                 ${order.hasImage
                   ? `<button class="badge ok image-badge-button" type="button" data-order-image-code="${escapeHtml(order.code)}">Ảnh</button>`
                   : `<span class="badge warn">Không ảnh</span>`}
-                ${normalizeSearchText(order.status) === "gap" ? `<span class="order-urgent-badge">Gấp</span>` : ""}
+                <span class="order-urgent-slot">${normalizeSearchText(order.status) === "gap" ? `<span class="order-urgent-badge">Gấp</span>` : ""}</span>
               </span>
             </div>
           </div>
@@ -1725,7 +1774,9 @@ function formatShortDateTime(value) {
 }
 
 function getCandidateLink(candidate, keys) {
-  const value = keys.map((key) => candidate[key]).find(Boolean);
+  // A historical application can outlive its candidate record. Treat the
+  // missing record as having no link instead of failing the entire view.
+  const value = keys.map((key) => candidate?.[key]).find(Boolean);
   if (!value) return "";
   return /^https?:\/\//i.test(value) ? value : `https://${value}`;
 }
@@ -1991,12 +2042,13 @@ function renderCandidateTable(candidates) {
         <span></span>
         <span>Ứng viên</span>
         <span>Mã đơn</span>
-        <span>${isBlacklist ? "Ngày bỏ" : "Ngành"}</span>
+        ${isBlacklist ? "" : "<span>Ngành</span>"}
         <span>Trạng thái</span>
         <span>CTV</span>
         <span>CV</span>
         <span>Link nhóm</span>
         <span>Ngày</span>
+        ${isBlacklist ? "<span>Ngày bỏ</span>" : ""}
         <span>Xóa</span>
       </div>
       ${visibleCandidates.length === 0 ? `
@@ -2020,7 +2072,7 @@ function renderCandidateTable(candidates) {
               </span>
               ${renderCandidateNameCell(candidate, zaloLink)}
               ${renderCandidateOrderCell(candidate, application)}
-              ${isBlacklist ? `<span class="candidate-date-cell">${escapeHtml(formatShortDate(getCandidateDroppedAt(candidate, application)))}</span>` : renderCandidateIndustryCell(candidate, application)}
+              ${isBlacklist ? "" : renderCandidateIndustryCell(candidate, application)}
               <span class="candidate-status-cell">${renderCandidateStatusControl(candidate, application)}</span>
               <span class="candidate-ctv-cell">
                 ${ctvLink ? `<a class="table-link name-link" href="${escapeHtml(ctvLink)}" target="_blank" rel="noopener">${escapeHtml(ctvName)}</a>` : escapeHtml(ctvName)}
@@ -2028,6 +2080,7 @@ function renderCandidateTable(candidates) {
               ${renderCandidateCvCell(candidate, application)}
               ${renderCandidateGroupCell(groupLink)}
               <span class="candidate-date-cell">${escapeHtml(formatShortDate(getCandidateJoinedAt(candidate, application)))}</span>
+              ${isBlacklist ? `<span class="candidate-date-cell">${escapeHtml(formatShortDate(getCandidateDroppedAt(candidate, application)))}</span>` : ""}
               <span class="candidate-delete-cell">
                 <button class="row-delete-button" type="button" data-delete-candidate-id="${escapeHtml(candidate.id || "")}" data-delete-candidate-name="${escapeHtml(candidate.fullName || candidate.name || "ứng viên")}">Xóa</button>
               </span>
@@ -2310,6 +2363,16 @@ function renderCustomerManagement() {
     (applications[code] ||= []).push(application);
     return applications;
   }, {});
+  const renderCustomerCandidate = (application) => {
+    const candidate = candidatesById.get(application.candidateId);
+    const name = candidate?.fullName || application.candidateName || "Chưa có tên";
+    const stage = getCandidateStatus(candidate, application);
+    const hasCv = Boolean(getCandidateCvLink(candidate, application));
+    const nameMarkup = hasCv
+      ? `<button class="customer-candidate-name has-cv" type="button" data-customer-cv-id="${escapeHtml(candidate?.id || "")}">${escapeHtml(name)}</button>`
+      : `<span class="customer-candidate-name">${escapeHtml(name)}</span>`;
+    return `<li>${nameMarkup}<span class="candidate-status ${getCandidateStatusClass(stage)}">${escapeHtml(stage)}</span></li>`;
+  };
   const groups = Object.keys(groupedOrders).sort((left, right) => {
     if (left === "Số") return 1;
     if (right === "Số") return -1;
@@ -2329,17 +2392,17 @@ function renderCustomerManagement() {
     const codeMarkup = order.hasImage
       ? `<button class="customer-order-code has-image" type="button" data-customer-order-code="${escapeHtml(code)}" title="Xem ảnh đơn">${escapeHtml(code)}</button>`
       : `<strong class="customer-order-code">${escapeHtml(code)}</strong>`;
-    const candidates = applications.map((application) => {
-      const candidate = candidatesById.get(application.candidateId);
-      const name = candidate?.fullName || application.candidateName || "Chưa có tên";
-      const stage = getCandidateStatus(candidate, application);
-      const hasCv = Boolean(getCandidateCvLink(candidate, application));
-      const nameMarkup = hasCv
-        ? `<button class="customer-candidate-name has-cv" type="button" data-customer-cv-id="${escapeHtml(candidate?.id || "")}">${escapeHtml(name)}</button>`
-        : `<span class="customer-candidate-name">${escapeHtml(name)}</span>`;
-      return `<li>${nameMarkup}<span class="candidate-status ${getCandidateStatusClass(stage)}">${escapeHtml(stage)}</span></li>`;
-    }).join("") || `<li class="customer-no-candidates">Chưa có ứng viên</li>`;
-    return `<article class="customer-order-card" data-customer-has-image="${order.hasImage ? "true" : "false"}"><header><div>${codeMarkup}<span>${escapeHtml(title)}</span></div><b>${applications.length} ứng viên</b></header><ul>${candidates}</ul></article>`;
+    const droppedApplications = applications.filter((application) => getCandidateStatus(candidatesById.get(application.candidateId), application) === "Bỏ đơn");
+    const activeApplications = applications.filter((application) => !droppedApplications.includes(application));
+    const visibleApplications = activeApplications.slice(0, 2);
+    const candidates = visibleApplications.map(renderCustomerCandidate).join("") || `<li class="customer-no-candidates">Chưa có ứng viên</li>`;
+    const moreButton = activeApplications.length > visibleApplications.length
+      ? `<button class="customer-more-candidates" type="button" data-customer-view-code="${escapeHtml(code)}">Xem toàn bộ ${activeApplications.length} UV</button>`
+      : "";
+    const droppedButton = droppedApplications.length
+      ? `<button class="customer-dropped-button" type="button" data-customer-dropped-code="${escapeHtml(code)}">BĐ ${droppedApplications.length}</button>`
+      : "";
+    return `<article class="customer-order-card" data-customer-has-image="${order.hasImage ? "true" : "false"}"><header><div>${codeMarkup}<span>${escapeHtml(title)}</span></div><div class="customer-order-count"><b>${activeApplications.length} ứng viên</b>${droppedButton}</div></header><ul>${candidates}</ul>${moreButton}</article>`;
   }).join("");
   const groupTabs = customerGroups.map((group, index) => `<button class="customer-group-tab${index === 0 ? " is-active" : ""}" type="button" data-customer-group="${escapeHtml(group.key)}">${escapeHtml(group.label)}</button>`).join("");
   const groupPanels = customerGroups.map((group, index) => {
@@ -2364,6 +2427,35 @@ function renderCustomerManagement() {
     applyCustomerImageFilter();
   }));
   list.querySelectorAll("[data-customer-cv-id]").forEach((button) => button.addEventListener("click", () => openCandidateCvById(button.dataset.customerCvId)));
+  list.querySelectorAll("[data-customer-view-code]").forEach((button) => button.addEventListener("click", () => {
+    const code = button.dataset.customerViewCode;
+    const order = customerOrders.find((item) => item.code === code);
+    const activeApplications = (applicationsByOrder[code] || []).filter((application) => getCandidateStatus(candidatesById.get(application.candidateId), application) !== "Bỏ đơn");
+    const dialog = document.getElementById("customerCandidatesDialog");
+    document.getElementById("customerCandidatesDialogTitle").textContent = code;
+    document.getElementById("customerCandidatesDialogMeta").textContent = `${order?.title || "Đơn tuyển"} • ${activeApplications.length} ứng viên`;
+    document.getElementById("customerCandidatesList").innerHTML = activeApplications.map(renderCustomerCandidate).join("");
+    document.getElementById("customerCandidatesList").querySelectorAll("[data-customer-cv-id]").forEach((cvButton) => cvButton.addEventListener("click", () => openCandidateCvById(cvButton.dataset.customerCvId)));
+    dialog.showModal();
+  }));
+  list.querySelectorAll("[data-customer-dropped-code]").forEach((button) => button.addEventListener("click", () => {
+    const code = button.dataset.customerDroppedCode;
+    const droppedApplications = (applicationsByOrder[code] || []).filter((application) => getCandidateStatus(candidatesById.get(application.candidateId), application) === "Bỏ đơn");
+    const dialog = document.getElementById("customerDroppedDialog");
+    document.getElementById("customerDroppedDialogTitle").textContent = `UV bỏ đơn - ${code}`;
+    document.getElementById("customerDroppedList").innerHTML = droppedApplications.map((application) => {
+      const candidate = candidatesById.get(application.candidateId);
+      const name = candidate?.fullName || application.candidateName || "Chưa có tên";
+      const hasCv = Boolean(getCandidateCvLink(candidate, application));
+      const nameMarkup = hasCv
+        ? `<button class="customer-candidate-name has-cv" type="button" data-customer-cv-id="${escapeHtml(candidate?.id || "")}">${escapeHtml(name)}</button>`
+        : `<span class="customer-candidate-name">${escapeHtml(name)}</span>`;
+      return `<li>${nameMarkup}<span class="candidate-status cancelled">Bỏ đơn</span></li>`;
+    }).join("");
+    document.getElementById("customerDroppedList").querySelectorAll("[data-customer-cv-id]").forEach((cvButton) => cvButton.addEventListener("click", () => openCandidateCvById(cvButton.dataset.customerCvId)));
+    dialog.showModal();
+    if (window.lucide) window.lucide.createIcons();
+  }));
   list.querySelectorAll("[data-customer-order-code]").forEach((button) => button.addEventListener("click", async () => {
     const order = customerOrders.find((item) => item.code === button.dataset.customerOrderCode);
     if (!order) return;
@@ -2416,7 +2508,10 @@ async function renderActiveSection() {
     // Show the last rendered state immediately; request fresh data without holding up navigation.
     renderCustomerManagement();
     const [candidates, applications, orders] = await Promise.all([loadCandidates(), loadApplications(), loadCandidateOrderOptions()]);
-    if (renderToken !== sectionRenderToken || activeSection !== section) return;
+    // A concurrent initial render can advance the token while these requests
+    // are in flight. The active section check is enough here: never leave the
+    // customer view stuck on its temporary empty state.
+    if (activeSection !== "customers") return;
     currentCandidates = candidates;
     currentApplications = applications;
     candidateOrderOptions = orders;
@@ -2688,6 +2783,22 @@ function bindCandidateCvViewer() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && document.getElementById("candidateCvDialog").open) closeCandidateCvDialog();
+  });
+}
+
+function bindCustomerDroppedDialog() {
+  const dialog = document.getElementById("customerDroppedDialog");
+  dialog.querySelector("[data-close-customer-dropped]").addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+}
+
+function bindCustomerCandidatesDialog() {
+  const dialog = document.getElementById("customerCandidatesDialog");
+  dialog.querySelector("[data-close-customer-candidates]").addEventListener("click", () => dialog.close());
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
   });
 }
 
@@ -3346,6 +3457,7 @@ function bindCreateCandidateModal() {
           orderId: selectedOrder.id,
           candidateId: candidateId || editingCandidateId,
           ctvId: selectedCtv?.id || "",
+          suppressActivity: true,
           stage: payload.stage || "Chờ PV",
           role: getOrderIndustryLabel(selectedOrder),
           sourceNote: selectedCtv ? (selectedCtv.fullName || selectedCtv.name || "") : payload.source || "",
@@ -3634,6 +3746,9 @@ document.addEventListener("DOMContentLoaded", () => {
   bindOrderDetailDialog();
   bindImageLightbox();
   bindCandidateCvViewer();
+  bindNotifications();
+  bindCustomerDroppedDialog();
+  bindCustomerCandidatesDialog();
   bindDeleteOrderDialog();
   bindDeleteCandidateDialog();
   bindDeleteCtvDialog();

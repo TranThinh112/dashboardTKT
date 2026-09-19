@@ -191,6 +191,13 @@ def utc_now():
     return datetime.now(VIETNAM_TIMEZONE).replace(tzinfo=None)
 
 
+def count_active_candidates(db):
+    """Exclude candidates who have withdrawn from an order from UV totals."""
+    withdrawn_ids = db.applications.distinct("candidateId", {"stage": "Bỏ đơn"})
+    query = {"_id": {"$nin": withdrawn_ids}} if withdrawn_ids else {}
+    return db.candidates.count_documents(query)
+
+
 def iso_datetime(value):
     if isinstance(value, datetime):
         # Records created before the Vietnam-time migration are UTC instants.
@@ -414,6 +421,34 @@ def normalize_order_payload(data):
         order_type, payload["location"], payload["status"],
     )
     return payload
+
+
+def get_order_change_labels(existing, payload):
+    """Return human-readable fields that changed without exposing raw order data."""
+    fields = [
+        ("code", "mã đơn"),
+        ("title", "tên/vị trí"),
+        ("department", "ngành"),
+        ("orderType", "loại đơn"),
+        ("headcount", "số lượng tuyển"),
+        ("location", "tỉnh làm việc"),
+        ("salaryText", "lương"),
+        ("requirement", "yêu cầu"),
+        ("workingHours", "giờ làm"),
+        ("benefits", "quyền lợi"),
+        ("interview", "lịch PV"),
+        ("backFee", "Back"),
+        ("status", "trạng thái đơn"),
+        ("postingStatus", "trạng thái đăng"),
+        ("postingGroup", "nhóm đăng"),
+        ("postingLink", "link đăng"),
+        ("hasImage", "ảnh đơn"),
+    ]
+    return [label for key, label in fields if existing.get(key) != payload.get(key)]
+
+
+def get_change_labels(existing, payload, fields):
+    return [label for key, label in fields if existing.get(key) != payload.get(key)]
 
 
 def has_valid_cv_data_url(value):
@@ -669,6 +704,25 @@ class MongoStore:
         self.db.applications.create_index([("ctvId", ASCENDING)])
         self.db.applications.create_index([("orderId", ASCENDING), ("stage", ASCENDING)])
         self.db.applications.create_index([("orderId", ASCENDING), ("candidateId", ASCENDING)], unique=True)
+        self.db.activity_logs.create_index([("createdAt", DESCENDING)])
+
+    def record_activity(self, message, category="update"):
+        self.db.activity_logs.insert_one({
+            "message": str(message),
+            "category": category,
+            "createdAt": utc_now(),
+        })
+
+    def list_activities(self):
+        return {"ok": True, "activities": [
+            {
+                "id": doc_id(item.get("_id")),
+                "message": item.get("message", ""),
+                "category": item.get("category", "update"),
+                "createdAt": iso_datetime(item.get("createdAt")),
+            }
+            for item in self.db.activity_logs.find({}, {"message": 1, "category": 1, "createdAt": 1}).sort("createdAt", DESCENDING).limit(100)
+        ]}
 
     def drop_unique_index_if_present(self, collection_name, index_name):
         index_info = self.db[collection_name].index_information().get(index_name)
@@ -874,9 +928,9 @@ class MongoStore:
         except (TypeError, ValueError):
             page = 1
         try:
-            page_size = min(50, max(1, int(query.get("pageSize", ["5"])[0])))
+            page_size = min(50, max(1, int(query.get("pageSize", ["10"])[0])))
         except (TypeError, ValueError):
-            page_size = 5
+            page_size = 10
         sort_by = query.get("sortBy", ["createdAt"])[0]
         sort_field = {"createdAt": "createdAt", "industry": "department", "name": "code"}.get(sort_by, "createdAt")
         sort_direction = ASCENDING if query.get("sortDirection", ["desc"])[0] == "asc" else DESCENDING
@@ -901,9 +955,8 @@ class MongoStore:
         stage_lookup = {stage: 0 for stage in stage_order}
         for row in self.db.applications.aggregate([{"$group": {"_id": "$stage", "total": {"$sum": 1}}}]):
             stage_lookup[row["_id"] or "Chờ PV"] = row["total"]
-        application_total = sum(stage_lookup.values())
-        candidate_total = self.db.candidates.count_documents({})
-        total_candidates = application_total or candidate_total
+        candidate_total = count_active_candidates(self.db)
+        total_candidates = candidate_total
 
         candidates = {stage: [] for stage in ["Chờ PV", "Chờ về cty", "Hoàn thành"]}
         collaborators = []
@@ -912,6 +965,8 @@ class MongoStore:
             candidate_lookup = self.get_docs_by_id("candidates", [app.get("candidateId") for app in application_docs])
             ctv_lookup = self.get_docs_by_id("ctvs", [app.get("ctvId") for app in application_docs])
             for app in application_docs:
+                if app.get("stage") == "Bỏ đơn":
+                    continue
                 stage = app.get("stage") if app.get("stage") in candidates else "Chờ PV"
                 candidate = candidate_lookup.get(app.get("candidateId"), {})
                 ctv = ctv_lookup.get(app.get("ctvId"), {})
@@ -965,7 +1020,7 @@ class MongoStore:
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             stage_future = executor.submit(get_stage_lookup)
-            candidate_total_future = executor.submit(self.db.candidates.count_documents, {})
+            candidate_total_future = executor.submit(count_active_candidates, self.db)
             active_collaborators_future = executor.submit(
                 self.db.ctvs.count_documents,
                 {"status": {"$ne": "Ngừng hoạt động"}},
@@ -991,8 +1046,7 @@ class MongoStore:
             order_status_rows = order_status_future.result()
 
         order_status = order_status_rows[0] if order_status_rows else {}
-        application_total = sum(stage_lookup.values())
-        total_candidates = application_total or candidate_total
+        total_candidates = candidate_total
         return {
             "ok": True,
             "metrics": {
@@ -1032,9 +1086,11 @@ class MongoStore:
                 payload.pop("createdAt", None)
                 payload["imageAddedAt"] = utc_now()
                 self.db.orders.update_one({"code": payload["code"]}, {"$set": payload})
+                self.record_activity(f"Đã thêm ảnh cho đơn {payload['code']}", "order")
                 return {"ok": True, "updatedExisting": True}
             raise ValueError("Mã đơn đã tồn tại.")
         self.db.orders.insert_one(payload)
+        self.record_activity(f"Đã thêm đơn {payload['code']}", "order")
         return {"ok": True}
 
     def get_order(self, code):
@@ -1059,15 +1115,19 @@ class MongoStore:
             merged_job_json = dict(existing.get("jobJson") or {})
             merged_job_json.update(payload.get("jobJson") or {})
             payload["jobJson"] = merged_job_json
+        changed_fields = get_order_change_labels(existing, payload)
         result = self.db.orders.update_one({"code": original_code}, {"$set": payload})
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy đơn cần cập nhật.")
+        detail = ", ".join(changed_fields) if changed_fields else "thông tin đơn"
+        self.record_activity(f"Đã cập nhật đơn {payload['code']}: {detail}", "order")
         return {"ok": True}
 
     def delete_order(self, code):
         result = self.db.orders.delete_one({"code": code})
         if result.deleted_count == 0:
             raise ValueError("Không tìm thấy đơn cần xóa.")
+        self.record_activity(f"Đã xóa đơn {code}", "order")
         return {"ok": True}
 
     def list_candidates(self):
@@ -1105,6 +1165,9 @@ class MongoStore:
 
     def update_candidate(self, candidate_id, data):
         object_id = mongo_id(candidate_id)
+        existing = self.db.candidates.find_one({"_id": object_id})
+        if not existing:
+            raise ValueError("Không tìm thấy ứng viên.")
         payload = normalize_candidate_payload(data)
         self.assert_candidate_unique(payload, candidate_id)
         if payload.get("cvDataUrl") == "__KEEP_EXISTING_CV__":
@@ -1143,9 +1206,19 @@ class MongoStore:
             unset_fields["emailKey"] = ""
         if unset_fields:
             update["$unset"] = unset_fields
+        changed_fields = get_change_labels(existing, payload, [
+            ("fullName", "họ tên"), ("phone", "SĐT"), ("email", "email"),
+            ("birthYear", "năm sinh"), ("gender", "giới tính"), ("address", "địa chỉ"),
+            ("zaloLink", "Zalo"), ("groupLink", "link nhóm"), ("role", "ngành"),
+            ("note", "ghi chú"), ("cvFileName", "CV"),
+        ])
+        if delete_cv:
+            changed_fields.append("CV")
         result = self.db.candidates.update_one({"_id": object_id}, update)
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy ứng viên.")
+        detail = ", ".join(dict.fromkeys(changed_fields)) if changed_fields else "thông tin hồ sơ"
+        self.record_activity(f"Đã cập nhật UV {payload['fullName']}: {detail}", "candidate")
         return {"ok": True}
 
     def get_candidate_cv(self, candidate_id, page=0):
@@ -1225,9 +1298,11 @@ class MongoStore:
             raise ValueError("Không thể ghép ảnh CV thành PDF.") from error
 
     def delete_candidate(self, candidate_id):
+        candidate = self.db.candidates.find_one({"_id": mongo_id(candidate_id)}, {"fullName": 1}) or {}
         result = self.db.candidates.delete_one({"_id": mongo_id(candidate_id)})
         if result.deleted_count == 0:
             raise ValueError("Không tìm thấy ứng viên.")
+        self.record_activity(f"Đã xóa ứng viên {candidate.get('fullName') or 'không rõ tên'}", "candidate")
         return {"ok": True}
 
     def list_ctvs(self, include_stats=True):
@@ -1254,6 +1329,7 @@ class MongoStore:
         self.assert_ctv_unique(payload)
         payload["createdAt"] = utc_now()
         result = self.db.ctvs.insert_one(payload)
+        self.record_activity(f"Đã thêm CTV {payload['fullName']}", "ctv")
         return {"ok": True, "id": doc_id(result.inserted_id)}
 
     def update_ctv(self, ctv_id, data):
@@ -1262,12 +1338,15 @@ class MongoStore:
         result = self.db.ctvs.update_one({"_id": mongo_id(ctv_id)}, {"$set": payload})
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy CTV.")
+        self.record_activity(f"Đã cập nhật CTV {payload['fullName']}", "ctv")
         return {"ok": True}
 
     def delete_ctv(self, ctv_id):
+        ctv = self.db.ctvs.find_one({"_id": mongo_id(ctv_id)}, {"fullName": 1}) or {}
         result = self.db.ctvs.delete_one({"_id": mongo_id(ctv_id)})
         if result.deleted_count == 0:
             raise ValueError("Không tìm thấy CTV.")
+        self.record_activity(f"Đã xóa CTV {ctv.get('fullName') or 'không rõ tên'}", "ctv")
         return {"ok": True}
 
     def list_applications(self):
@@ -1313,6 +1392,13 @@ class MongoStore:
         if str(payload.get("stage", "")).strip().lower() == "bỏ đơn":
             payload["droppedAt"] = payload["createdAt"]
         result = self.db.applications.insert_one(payload)
+        candidate = self.db.candidates.find_one({"_id": payload["candidateId"]}, {"fullName": 1}) or {}
+        order = self.db.orders.find_one({"_id": payload["orderId"]}, {"code": 1}) or {}
+        ctv = self.db.ctvs.find_one({"_id": payload["ctvId"]}, {"fullName": 1}) or {}
+        self.record_activity(
+            f"Đã thêm UV {candidate.get('fullName') or 'không rõ tên'} vào đơn {order.get('code') or 'không rõ mã'} (CTV: {ctv.get('fullName') or 'Chưa có'})",
+            "application",
+        )
         return {"ok": True, "id": doc_id(result.inserted_id)}
 
     def update_application(self, application_id, data):
@@ -1320,7 +1406,7 @@ class MongoStore:
         payload = normalize_application_payload(data)
         if not data.get("appliedAt"):
             payload.pop("appliedAt", None)
-        existing = self.db.applications.find_one({"_id": object_id}, {"stage": 1, "droppedAt": 1}) or {}
+        existing = self.db.applications.find_one({"_id": object_id}, {"stage": 1, "droppedAt": 1, "candidateId": 1, "orderId": 1}) or {}
         if str(payload.get("stage", "")).strip().lower() == "bỏ đơn" and str(existing.get("stage", "")).strip().lower() != "bỏ đơn":
             payload["droppedAt"] = utc_now()
         elif existing.get("droppedAt"):
@@ -1328,6 +1414,17 @@ class MongoStore:
         result = self.db.applications.update_one({"_id": object_id}, {"$set": payload})
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy lượt ứng tuyển.")
+        if data.get("suppressActivity"):
+            return {"ok": True}
+        candidate = self.db.candidates.find_one({"_id": payload["candidateId"]}, {"fullName": 1}) or {}
+        order = self.db.orders.find_one({"_id": payload["orderId"]}, {"code": 1}) or {}
+        changed_fields = get_change_labels(existing, payload, [
+            ("orderId", "đơn tuyển"), ("ctvId", "CTV"), ("stage", "trạng thái UV"),
+            ("groupLink", "link nhóm"), ("role", "ngành"), ("note", "ghi chú"),
+            ("interviewAt", "ngày PV"), ("interviewLink", "link PV"),
+        ])
+        detail = ", ".join(changed_fields) if changed_fields else "thông tin ứng tuyển"
+        self.record_activity(f"Đã cập nhật UV {candidate.get('fullName') or 'không rõ tên'} ({order.get('code') or 'không rõ mã'}): {detail}", "application")
         return {"ok": True}
 
     def delete_application(self, application_id):
@@ -1390,6 +1487,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/metrics":
             self.send_json(cached_response("metrics", store.get_metrics))
+            return
+        if parsed.path == "/api/activities":
+            self.send_json(store.list_activities())
             return
         if parsed.path == "/api/order-detail":
             code = query.get("code", [""])[0]

@@ -7,9 +7,9 @@
     <script>
       document.documentElement.dataset.activeSection = localStorage.getItem("activeDashboardSection") || "orders";
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20260914-blacklist-tab" />
+    <link rel="stylesheet" href="./styles.css?v=20260919-order-image-badge-align" />
     <script defer src="https://unpkg.com/lucide@latest"></script>
-    <script defer src="./script.js?v=20260914-blacklist-tab2"></script>
+    <script defer src="./script.js?v=20260919-customer-missing-candidate"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -51,8 +51,9 @@
             <button class="icon-button" type="button" aria-label="Bộ lọc">
               <i data-lucide="sliders-horizontal" aria-hidden="true"></i>
             </button>
-            <button class="icon-button" type="button" aria-label="Thông báo">
+            <button id="openNotifications" class="icon-button notification-button" type="button" aria-label="Thông báo">
               <i data-lucide="bell" aria-hidden="true"></i>
+              <span id="notificationBadge" class="notification-badge" hidden>0</span>
             </button>
             <button id="openCreateOrderModal" class="primary-button" type="button">
               <i data-lucide="plus" aria-hidden="true"></i>
@@ -520,6 +521,40 @@
         <button id="closeImageLightbox" class="lightbox-close-button" type="button" aria-label="Đóng">×</button>
         <img id="lightboxImage" alt="Ảnh đơn phóng to" />
       </div>
+    </dialog>
+
+    <dialog id="customerDroppedDialog" class="delete-dialog customer-dropped-dialog">
+      <div class="delete-dialog-card customer-dropped-card">
+        <div class="interview-schedule-header">
+          <h2 id="customerDroppedDialogTitle">UV bỏ đơn</h2>
+          <button class="lightbox-close-button inline-close-button" type="button" data-close-customer-dropped aria-label="Đóng">×</button>
+        </div>
+        <ul id="customerDroppedList" class="customer-dropped-list"></ul>
+      </div>
+    </dialog>
+
+    <dialog id="customerCandidatesDialog" class="delete-dialog customer-candidates-dialog">
+      <div class="delete-dialog-card customer-candidates-card">
+        <div class="customer-candidates-header">
+          <div>
+            <span class="customer-dialog-kicker">DANH SÁCH ỨNG VIÊN</span>
+            <h2 id="customerCandidatesDialogTitle">Mã đơn</h2>
+            <p id="customerCandidatesDialogMeta"></p>
+          </div>
+          <button class="lightbox-close-button inline-close-button" type="button" data-close-customer-candidates aria-label="Đóng">×</button>
+        </div>
+        <ul id="customerCandidatesList" class="customer-candidates-list"></ul>
+      </div>
+    </dialog>
+
+    <dialog id="notificationsDialog" class="notifications-dialog">
+      <section class="notifications-card">
+        <header class="notifications-header">
+          <div><span>NHẬT KÝ HOẠT ĐỘNG</span><h2>Thông báo thay đổi</h2></div>
+          <button id="closeNotifications" class="lightbox-close-button inline-close-button" type="button" aria-label="Đóng">×</button>
+        </header>
+        <div id="notificationsList" class="notifications-list"><p>Đang tải thông báo...</p></div>
+      </section>
     </dialog>
 
     <dialog id="candidateCvDialog" class="cv-viewer-dialog">
