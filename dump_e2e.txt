@@ -1,9 +1,0 @@
-orders: {'TEST1': '6aaf9819335b5bfc78fc4fc7', 'TEST2': '6aaf9819335b5bfc78fc4fc9'} candidate: {'ok': True, 'id': '6aaf9819335b5bfc78fc4fcb'}
-created app: {'ok': True, 'id': '6aaf981a335b5bfc78fc4fcc'}
-order change result: {'ok': True}
-  LEDGER: application | Đã thay đổi mã đơn cho UV UV TEST: TEST1 -> TEST2
-  LEDGER: application | Đã thêm UV UV TEST vào đơn TEST1 (CTV: CTV Test)
-  LEDGER: order | Đã thêm đơn TEST2
-  LEDGER: order | Đã thêm đơn TEST1
-  LEDGER: ctv | Đã thêm CTV CTV Test
-dropped test db

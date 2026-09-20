@@ -456,10 +456,10 @@ def describe_group_link_change(old_value, new_value):
     if old_link == new_link:
         return ""
     if not old_link and new_link:
-        return f"da them link nhom: {new_link}"
+        return "Thêm link nhóm"
     if old_link and not new_link:
-        return f"da xoa link nhom (link cu: {old_link})"
-    return f"da doi link nhom: {old_link} -> {new_link}"
+        return "Xóa link nhóm"
+    return "Đổi link nhóm"
 
 
 def has_valid_cv_data_url(value):

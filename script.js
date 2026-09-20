@@ -1971,7 +1971,7 @@ function renderCandidateIndustryCell(candidate, application) {
 function renderCandidateGroupCell(groupLink) {
   return `
     <span class="candidate-group-cell">
-      ${groupLink ? `<a class="table-link" href="${escapeHtml(groupLink)}" target="_blank" rel="noopener" title="${escapeHtml(groupLink)}">${escapeHtml(groupLink)}</a>` : `<span class="muted-value">Chưa có</span>`}
+      ${groupLink ? `<a class="table-link" href="${escapeHtml(groupLink)}" target="_blank" rel="noopener" title="${escapeHtml(groupLink)}">Mở nhóm</a>` : `<span class="muted-value">Chưa có</span>`}
     </span>
   `;
 }
