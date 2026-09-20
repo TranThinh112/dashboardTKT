@@ -1525,6 +1525,11 @@ select {
   color: #0f766e;
 }
 
+.candidate-status.waiting-result {
+  background: #fef3c7;
+  color: #92400e;
+}
+
 .candidate-status.returning {
   background: #ede9fe;
   color: #6d28d9;
@@ -1613,9 +1618,81 @@ select {
   color: #1261c9;
 }
 
+.candidate-global-results {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 9px;
+  background: #f8fbff;
+}
+
+.candidate-global-results > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #1e3a8a;
+}
+
+.candidate-global-results > div:first-child span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.candidate-global-result-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.candidate-global-result-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px 120px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #dbeafe;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #1e293b;
+  text-align: left;
+  cursor: pointer;
+}
+
+.candidate-global-result-list button:hover {
+  border-color: #60a5fa;
+  background: #eff6ff;
+}
+
+.candidate-global-result-list small {
+  color: #64748b;
+}
+
+.candidate-global-result-list em {
+  justify-self: end;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.candidate-global-result-list em.active {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.candidate-global-result-list em.blacklist {
+  background: #e5e7eb;
+  color: #4b5563;
+}
+
 .ctv-table .clean-table-head,
 .ctv-table .clean-table-row {
-  grid-template-columns: minmax(80px, .45fr) minmax(240px, 1.5fr) minmax(150px, .85fr) minmax(130px, .65fr) minmax(76px, .38fr) minmax(64px, .34fr);
+  grid-template-columns: minmax(80px, .45fr) minmax(240px, 1.5fr) minmax(150px, .85fr) minmax(130px, .65fr) minmax(64px, .34fr) minmax(76px, .38fr) minmax(64px, .34fr);
 }
 
 .candidate-table .clean-table-head,
@@ -1625,6 +1702,15 @@ select {
 
 .candidate-table {
   min-width: 1120px;
+}
+
+.candidate-blacklist-table {
+  min-width: 920px;
+}
+
+.candidate-blacklist-table .clean-table-head,
+.candidate-blacklist-table .clean-table-row {
+  grid-template-columns: minmax(170px, 1.25fr) minmax(72px, .45fr) minmax(110px, .7fr) minmax(70px, .4fr) minmax(70px, .4fr) minmax(70px, .4fr) minmax(60px, .34fr);
 }
 
 .row-icon-button {
@@ -1691,6 +1777,11 @@ select {
   font-weight: 600;
 }
 
+.link-input-row { display: flex; align-items: center; gap: 8px; }
+.link-input-row input { min-width: 0; flex: 1; }
+.link-clear-button { min-height: 38px; border: 1px solid #fecaca; border-radius: 8px; padding: 0 10px; background: #fff1f2; color: #b91c1c; font-size: 12px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+.link-clear-button:hover { background: #fee2e2; border-color: #ef4444; }
+
 .phone-with-flag {
   display: inline-flex;
   align-items: center;
@@ -1750,6 +1841,13 @@ select {
 
 .candidate-order-cell .order-participation-link {
   width: fit-content;
+}
+
+/* Blacklist order codes are read-only, so make their text easier to scan. */
+.candidate-blacklist-table .candidate-order-cell {
+  font-size: 18px;
+  font-weight: 800;
+  color: #b45309;
 }
 
 .muted-value {

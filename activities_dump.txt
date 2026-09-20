@@ -1,0 +1,25 @@
+2026-09-20 15:01:14.159000 | candidate | Đã cập nhật UV TRAN TIEN LUAN: ngành
+2026-09-20 15:00:51.085000 | candidate | Đã cập nhật UV TRAN TIEN LUAN: ngành
+2026-09-20 14:59:17.610000 | candidate | Đã cập nhật UV TRAN TIEN LUAN: Xóa SĐT
+2026-09-20 14:58:28.141000 | candidate | Đã cập nhật UV TRAN TIEN LUAN: ngành
+2026-09-20 14:58:12.202000 | candidate | Đã cập nhật UV TRAN TIEN LUAN: Thêm SĐT
+2026-09-20 14:58:04.018000 | candidate | Đã cập nhật UV TRAN TIEN LUAN: Xóa SĐT
+2026-09-20 14:51:39.298000 | application | Đã cập nhật Trạng thái của UV TRAN TIEN LUAN (AGT11): Đã nhận tiền
+2026-09-20 14:51:25.101000 | application | Đã cập nhật Trạng thái của UV TRAN TIEN LUAN (AGT11): Hoàn thành
+2026-09-20 14:50:37.352000 | candidate | Đã cập nhật UV TRAN TIEN LUAN: SĐT
+2026-09-20 14:50:20.651000 | application | Đã cập nhật Trạng thái của UV TRAN TIEN LUAN (AGT11): Chờ về Cty
+2026-09-20 14:47:50.905000 | application | Đã cập nhật UV CAO THI NHUNG (AGT12): trạng thái UV, link nhóm, ngành, ghi chú, ngày PV, link PV
+2026-09-20 14:42:23.905000 | application | Đã cập nhật UV VU THI THUY LINH (AGT12): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:40:42.990000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:35:08.300000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:35:03.757000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:34:58.397000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:34:50.490000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:34:43.777000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:34:38.732000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:34:10.184000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:33:42.740000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:27:32.092000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:26:45.915000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV
+2026-09-20 14:22:50.101000 | application | Đã cập nhật UV LE THI MAI (AGT12): trạng thái UV, link nhóm, ngành, ghi chú, ngày PV, link PV
+2026-09-20 14:22:02.937000 | application | Đã cập nhật UV TRAN TIEN LUAN (AGT11): trạng thái UV, link nhóm, ngành, ghi chú, link PV

@@ -36,6 +36,7 @@ let currentCtvs = [];
 let currentApplications = [];
 let currentMetrics = null;
 let activeCandidateView = "active";
+let candidateSearchQuery = "";
 let sectionRenderToken = 0;
 let candidatesLoaded = false;
 let ctvsLoaded = false;
@@ -564,6 +565,18 @@ async function createCtv(payload) {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Không thể thêm CTV");
+  clearFrontendCache();
+  return data;
+}
+
+async function updateCtv(ctvId, payload) {
+  const response = await fetch(`/api/ctvs/${encodeURIComponent(ctvId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "Không thể cập nhật CTV");
   clearFrontendCache();
   return data;
 }
@@ -1662,12 +1675,13 @@ function getCandidateOrder(candidate, application) {
   return candidateOrderOptions.find((order) => order.code === orderCode) || null;
 }
 
-function renderCandidateOrderButton(candidate, application) {
+function renderCandidateOrderButton(candidate, application, clickable = true) {
   const orderCode = getCandidateOrderCode(candidate, application);
   if (!orderCode) return `<span>Chưa có</span>`;
   const order = getCandidateOrder(candidate, application);
-  if (!order) return `<span title="${escapeHtml(getCandidateOrderLabel(candidate, application))}">${escapeHtml(orderCode)}</span>`;
-  return `<button class="table-link table-link-button order-participation-link" type="button" data-candidate-order-code="${escapeHtml(order.code)}" title="${escapeHtml(getCandidateOrderLabel(candidate, application))}">${escapeHtml(order.code)}</button>`;
+  if (!clickable) return `<span title="${escapeHtml(getCandidateOrderLabel(candidate, application))}">${escapeHtml(order.code)}</span>`;
+  const code = order?.code || orderCode;
+  return `<button class="table-link table-link-button order-participation-link" type="button" data-candidate-order-code="${escapeHtml(code)}" title="${escapeHtml(getCandidateOrderLabel(candidate, application))}">${escapeHtml(code)}</button>`;
 }
 
 function getCandidateIndustry(candidate, application) {
@@ -1687,6 +1701,7 @@ function getCandidateStatus(candidate, application) {
   const value = normalizeSearchText(application?.stage || application?.status || candidate?.stage || candidate?.status || "");
   if (/da nhan tien/.test(value)) return "Đã nhận tiền";
   if (/bo don/.test(value)) return "Bỏ đơn";
+  if (/cho ket qua/.test(value)) return "Chờ kết quả";
   if (/truot pv|rot pv|khong dat/.test(value)) return "Trượt PV";
   if (/dau pv|dat pv|pass pv/.test(value)) return "Đậu PV";
   if (/hoan thanh|nhan viec|offer|ve cty xong/.test(value)) return "Hoàn thành";
@@ -1708,6 +1723,7 @@ function getCandidateStatusClass(status) {
   if (/truot pv|rot pv/.test(value)) return "failed";
   if (/dau pv|dat pv|pass pv/.test(value)) return "passed";
   if (/hoan thanh/.test(value)) return "done";
+  if (/cho ket qua/.test(value)) return "waiting-result";
   if (/cho ve cty/.test(value)) return "returning";
   if (/da co lich/.test(value)) return "scheduled";
   return "interview";
@@ -1936,10 +1952,10 @@ function renderCandidateNameCell(candidate, zaloLink) {
   `;
 }
 
-function renderCandidateOrderCell(candidate, application) {
+function renderCandidateOrderCell(candidate, application, clickable = true) {
   return `
     <span class="candidate-order-cell">
-      ${renderCandidateOrderButton(candidate, application)}
+      ${renderCandidateOrderButton(candidate, application, clickable)}
     </span>
   `;
 }
@@ -1955,7 +1971,7 @@ function renderCandidateIndustryCell(candidate, application) {
 function renderCandidateGroupCell(groupLink) {
   return `
     <span class="candidate-group-cell">
-      ${groupLink ? `<a class="table-link" href="${escapeHtml(groupLink)}" target="_blank" rel="noopener">Mở nhóm</a>` : `<span class="muted-value">Chưa có</span>`}
+      ${groupLink ? `<a class="table-link" href="${escapeHtml(groupLink)}" target="_blank" rel="noopener" title="${escapeHtml(groupLink)}">${escapeHtml(groupLink)}</a>` : `<span class="muted-value">Chưa có</span>`}
     </span>
   `;
 }
@@ -1970,9 +1986,27 @@ function renderCandidateCvCell(candidate, application) {
   `;
 }
 
+function getGlobalCandidateMatches(query) {
+  if (!query) return [];
+  return currentCandidates
+    .map((candidate) => {
+      const application = getCandidateApplication(candidate);
+      const searchable = normalizeSearchText([
+        candidate.fullName || candidate.name,
+        candidate.phone,
+        getCandidateOrderLabel(candidate, application),
+        getCandidateIndustry(candidate, application),
+        getCandidateStatus(candidate, application),
+        getCandidateCtv(candidate, application),
+      ].filter(Boolean).join(" "));
+      return { candidate, application, isBlacklisted: getCandidateStatus(candidate, application) === "Bỏ đơn", matches: searchable.includes(query) };
+    })
+    .filter((item) => item.matches);
+}
+
 function renderCandidateTable(candidates) {
   const list = document.getElementById("orderList") || document.getElementById("ordersList");
-  const search = document.getElementById("candidateSearch")?.value.trim() || "";
+  const search = document.getElementById("candidateSearch")?.value.trim() || candidateSearchQuery;
   const stage = document.getElementById("candidateStageFilter")?.value || "all";
   const sortBy = document.getElementById("candidateSortBy")?.value || "joinedAt";
   const direction = document.getElementById("candidateSortDirection")?.value || "desc";
@@ -2005,9 +2039,17 @@ function renderCandidateTable(candidates) {
       return String(first).localeCompare(String(second), "vi", { numeric: true, sensitivity: "base" }) * multiplier;
     });
 
-  const stages = ["Chờ PV", "Chờ về cty", "Hoàn thành"];
+  const stages = ["Chờ PV", "Chờ kết quả", "Chờ về cty", "Hoàn thành"];
 
   const isBlacklist = activeCandidateView === "blacklist";
+  const globalMatches = getGlobalCandidateMatches(query);
+  const globalResults = query ? `
+    <section class="candidate-global-results" aria-label="Kết quả tìm kiếm toàn bộ UV">
+      <div><strong>Tìm thấy ${globalMatches.length} UV trên toàn bộ danh sách</strong><span>Bấm để mở đúng danh sách</span></div>
+      <div class="candidate-global-result-list">
+        ${globalMatches.length ? globalMatches.map(({ candidate, application, isBlacklisted }) => `<button type="button" data-global-candidate-id="${escapeHtml(candidate.id || "")}" data-global-candidate-view="${isBlacklisted ? "blacklist" : "active"}"><span>${escapeHtml(candidate.fullName || candidate.name || "Chưa có tên")}</span><small>${escapeHtml(getCandidateOrderCode(candidate, application) || "Chưa có đơn")}</small><em class="${isBlacklisted ? "blacklist" : "active"}">${isBlacklisted ? "Danh sách đen" : "Danh sách chính"}</em></button>`).join("") : "<p>Không tìm thấy UV phù hợp.</p>"}
+      </div>
+    </section>` : "";
   list.innerHTML = `
     <div class="candidate-view-tabs" role="tablist" aria-label="Danh sách ứng viên">
       <button class="candidate-view-tab${!isBlacklist ? " is-active" : ""}" type="button" data-candidate-view="active">Ứng viên</button>
@@ -2037,16 +2079,17 @@ function renderCandidateTable(candidates) {
         </select>
       </label>
     </div>
-    <div class="clean-table candidate-table">
+    ${globalResults}
+    <div class="clean-table candidate-table${isBlacklist ? " candidate-blacklist-table" : ""}">
       <div class="clean-table-head">
-        <span></span>
+        ${isBlacklist ? "" : "<span></span>"}
         <span>Ứng viên</span>
         <span>Mã đơn</span>
         ${isBlacklist ? "" : "<span>Ngành</span>"}
         <span>Trạng thái</span>
-        <span>CTV</span>
+        ${isBlacklist ? "" : "<span>CTV</span>"}
         <span>CV</span>
-        <span>Link nhóm</span>
+        ${isBlacklist ? "" : "<span>Link nhóm</span>"}
         <span>Ngày</span>
         ${isBlacklist ? "<span>Ngày bỏ</span>" : ""}
         <span>Xóa</span>
@@ -2065,20 +2108,20 @@ function renderCandidateTable(candidates) {
           const groupLink = getCandidateGroupLink(candidate, application);
           return `
             <div class="clean-table-row">
-              <span class="candidate-action-cell">
+              ${isBlacklist ? "" : `<span class="candidate-action-cell">
                 <button class="row-icon-button" type="button" data-add-candidate-from-row="${escapeHtml(candidate.id || "")}" aria-label="Chỉnh sửa ứng viên">
                   <i data-lucide="pencil" aria-hidden="true"></i>
                 </button>
-              </span>
+              </span>`}
               ${renderCandidateNameCell(candidate, zaloLink)}
-              ${renderCandidateOrderCell(candidate, application)}
+              ${renderCandidateOrderCell(candidate, application, !isBlacklist)}
               ${isBlacklist ? "" : renderCandidateIndustryCell(candidate, application)}
-              <span class="candidate-status-cell">${renderCandidateStatusControl(candidate, application)}</span>
-              <span class="candidate-ctv-cell">
+              <span class="candidate-status-cell">${isBlacklist ? `<span class="candidate-status cancelled">Bỏ đơn</span>` : renderCandidateStatusControl(candidate, application)}</span>
+              ${isBlacklist ? "" : `<span class="candidate-ctv-cell">
                 ${ctvLink ? `<a class="table-link name-link" href="${escapeHtml(ctvLink)}" target="_blank" rel="noopener">${escapeHtml(ctvName)}</a>` : escapeHtml(ctvName)}
-              </span>
+              </span>`}
               ${renderCandidateCvCell(candidate, application)}
-              ${renderCandidateGroupCell(groupLink)}
+              ${isBlacklist ? "" : renderCandidateGroupCell(groupLink)}
               <span class="candidate-date-cell">${escapeHtml(formatShortDate(getCandidateJoinedAt(candidate, application)))}</span>
               ${isBlacklist ? `<span class="candidate-date-cell">${escapeHtml(formatShortDate(getCandidateDroppedAt(candidate, application)))}</span>` : ""}
               <span class="candidate-delete-cell">
@@ -2095,10 +2138,15 @@ function renderCandidateTable(candidates) {
     activeCandidateView = button.dataset.candidateView;
     renderCandidateTable(currentCandidates);
   }));
+  list.querySelectorAll("[data-global-candidate-id]").forEach((button) => button.addEventListener("click", () => {
+    activeCandidateView = button.dataset.globalCandidateView;
+    candidateSearchQuery = "";
+    renderCandidateTable(currentCandidates);
+  }));
   list.querySelectorAll("[data-candidate-order-code]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const order = candidateOrderOptions.find((item) => item.code === button.dataset.candidateOrderCode);
-      if (!order) return;
+      const order = candidateOrderOptions.find((item) => item.code === button.dataset.candidateOrderCode)
+        || { code: button.dataset.candidateOrderCode };
       button.disabled = true;
       try {
         openOrderDetail(await ensureOrderDetail(order));
@@ -2202,6 +2250,7 @@ function renderCtvTable(ctvs) {
               ${renderLinkedName(ctv.fullName || ctv.name, zaloLink)}
               <span>${escapeHtml(formatShortDate(ctv.createdAt))}</span>
               <span><span class="badge">${getCtvRecruitedCount(ctv)}</span></span>
+              <span><button class="table-link table-link-button" type="button" data-ctv-edit-id="${escapeHtml(ctv.id || "")}">Sửa</button></span>
               <span><button class="table-link table-link-button" type="button" data-ctv-detail-id="${escapeHtml(ctv.id || "")}">Chi tiết</button></span>
               <span><button class="row-delete-button" type="button" data-delete-ctv-id="${escapeHtml(ctv.id || "")}" data-delete-ctv-name="${escapeHtml(ctv.fullName || ctv.name || "CTV")}">Xóa</button></span>
             </div>
@@ -2215,6 +2264,12 @@ function renderCtvTable(ctvs) {
     button.addEventListener("click", () => {
       const ctv = currentCtvs.find((item) => item.id === button.dataset.ctvDetailId);
       if (ctv) openCtvDetail(ctv);
+    });
+  });
+  list.querySelectorAll("[data-ctv-edit-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const ctv = currentCtvs.find((item) => item.id === button.dataset.ctvEditId);
+      if (ctv) openEditCtvModal(ctv);
     });
   });
   list.querySelectorAll("[data-delete-ctv-id]").forEach((button) => {
@@ -2239,7 +2294,10 @@ function bindPeopleToolbars() {
   };
 
   ["candidateSearch", "candidateStageFilter", "candidateSortBy", "candidateSortDirection"].forEach((id) => {
-    document.getElementById(id)?.addEventListener("input", () => keepFocus(id, () => renderCandidateTable(currentCandidates)));
+    document.getElementById(id)?.addEventListener("input", () => {
+      if (id === "candidateSearch") candidateSearchQuery = document.getElementById(id)?.value.trim() || "";
+      keepFocus(id, () => renderCandidateTable(currentCandidates));
+    });
     document.getElementById(id)?.addEventListener("change", () => keepFocus(id, () => renderCandidateTable(currentCandidates)));
   });
   ["ctvSearch", "ctvSortBy", "ctvSortDirection"].forEach((id) => {
@@ -2549,7 +2607,7 @@ async function refreshDashboard() {
     }
 
     const bootstrap = ["candidates", "customers"].includes(activeSection)
-      ? await Promise.all([loadDashboard(), loadCandidates(), loadApplications(), loadCtvs()])
+      ? await Promise.all([loadDashboard(), loadCandidates(), loadApplications(), loadCtvs(), loadCandidateOrderOptions()])
       : null;
     const data = bootstrap?.[0] || await loadDashboard();
     currentOrders = data.orders;
@@ -2559,6 +2617,7 @@ async function refreshDashboard() {
       currentCandidates = bootstrap[1] || [];
       currentApplications = bootstrap[2] || [];
       currentCtvs = bootstrap[3] || [];
+      candidateOrderOptions = bootstrap[4] || [];
       candidatesLoaded = true;
       ctvsLoaded = true;
     }
@@ -3382,6 +3441,10 @@ function bindCreateCandidateModal() {
     readCandidateCvFiles(fileInput.files, form);
   });
   document.getElementById("deleteCandidateCvButton").addEventListener("click", deleteCandidateCvFromForm);
+  document.getElementById("clearCandidateGroupLink").addEventListener("click", () => {
+    form.elements.groupLink.value = "";
+    form.elements.groupLink.focus();
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const submitButton = form.querySelector('button[type="submit"]');
@@ -3516,8 +3579,10 @@ function normalizeInterviewLink(value) {
 }
 
 function setInterviewEditMode(isEditing) {
-  document.getElementById("interviewCandidateStage").hidden = isEditing;
-  document.getElementById("interviewCandidateStageInput").hidden = !isEditing;
+  const stageInput = document.getElementById("interviewCandidateStageInput");
+  const isFinalPaid = stageInput?.dataset.finalPaid === "true";
+  document.getElementById("interviewCandidateStage").hidden = isEditing && !isFinalPaid;
+  stageInput.hidden = !isEditing || isFinalPaid;
   document.getElementById("interviewScheduleDate").hidden = isEditing;
   document.getElementById("interviewScheduleLink").hidden = isEditing;
   document.getElementById("interviewScheduleDateInput").hidden = !isEditing;
@@ -3526,6 +3591,38 @@ function setInterviewEditMode(isEditing) {
   document.getElementById("editInterviewSchedule").hidden = isEditing;
   document.getElementById("interviewScheduleStatus").textContent = "";
   document.getElementById("interviewScheduleStatus").className = "form-message";
+}
+
+function lockInterviewStageOptions(application) {
+  const select = document.getElementById("interviewCandidateStageInput");
+  if (!select) return;
+  const hasInterview = Boolean(formatDateInputValue(application?.interviewAt));
+  const currentStage = getCandidateStatus(null, application);
+  select.dataset.finalPaid = currentStage === "Đã nhận tiền" ? "true" : "false";
+  const stages = ["Chờ PV", "Đậu PV", "Trượt PV", "Chờ về Cty", "Hoàn thành", "Đã nhận tiền", "Bỏ đơn"];
+  let allowedStages = stages.filter((stage) => {
+    if (currentStage === "Trượt PV") return false;
+    if (currentStage === "Đã nhận tiền") return false;
+    if (currentStage === "Chờ về Cty" && !["Hoàn thành", "Đã nhận tiền", "Bỏ đơn"].includes(stage)) return false;
+    if (currentStage === "Hoàn thành" && stage !== "Đã nhận tiền") return false;
+    if (currentStage === "Đậu PV" && (stage === "Chờ PV" || stage === "Chờ kết quả" || stage === "Trượt PV")) return false;
+    if (hasInterview && stage === "Chờ PV") return false;
+    if ((currentStage === "Đậu PV" || currentStage === "Trượt PV")
+      && (stage === "Đậu PV" || stage === "Trượt PV") && stage !== currentStage) return false;
+    return true;
+  });
+
+  // Keep the current status visible while removing invalid transitions.
+  if (currentStage && !allowedStages.includes(currentStage)
+    && !(hasInterview && currentStage === "Chờ PV")) {
+    allowedStages = [currentStage, ...allowedStages];
+  }
+  select.replaceChildren(...allowedStages.map((stage) => {
+    const option = new Option(stage, stage);
+    option.disabled = stage === "Chờ kết quả";
+    return option;
+  }));
+  select.value = currentStage;
 }
 
 function openInterviewScheduleDialog(applicationId, candidateId) {
@@ -3547,6 +3644,7 @@ function openInterviewScheduleDialog(applicationId, candidateId) {
   stageElement.textContent = candidateStage;
   stageElement.className = `candidate-status ${getCandidateStatusClass(candidateStage)}`;
   document.getElementById("interviewCandidateStageInput").value = candidateStage;
+  lockInterviewStageOptions(application);
   document.getElementById("interviewScheduleDate").textContent = formatInterviewDate(application?.interviewAt);
   document.getElementById("interviewScheduleDateInput").value = formatDateInputValue(application?.interviewAt);
   document.getElementById("interviewScheduleLinkInput").value = link;
@@ -3576,10 +3674,24 @@ async function saveInterviewSchedule() {
 
   const interviewAt = document.getElementById("interviewScheduleDateInput").value;
   const interviewLink = normalizeInterviewLink(document.getElementById("interviewScheduleLinkInput").value);
-  const candidateStage = document.getElementById("interviewCandidateStageInput").value;
+  const requestedStage = document.getElementById("interviewCandidateStageInput").value;
   const currentInterviewAt = formatDateInputValue(application.interviewAt);
   const currentInterviewLink = normalizeInterviewLink(application.interviewLink || application.interviewUrl || application.meetingLink || "");
   const currentStage = getCandidateStatus(null, application);
+  const candidateStage = requestedStage || currentStage;
+
+  if (application.interviewAt && candidateStage === "Chờ PV") {
+    status.textContent = "UV đã có lịch PV nên không thể chuyển về Chờ PV.";
+    status.className = "form-message error";
+    return;
+  }
+  if ((currentStage === "Đậu PV" || currentStage === "Trượt PV")
+      && (candidateStage === "Đậu PV" || candidateStage === "Trượt PV")
+      && candidateStage !== currentStage) {
+    status.textContent = "Không thể chuyển trực tiếp giữa Đậu PV và Trượt PV.";
+    status.className = "form-message error";
+    return;
+  }
 
   if (interviewLink) {
     try {
@@ -3657,6 +3769,32 @@ function openCreateCtvModal() {
   const form = document.getElementById("createCtvForm");
   const message = document.getElementById("createCtvMessage");
   form.reset();
+  delete form.dataset.editingCtvId;
+  delete form.dataset.originalCtv;
+  document.getElementById("createCtvTitle").textContent = "Thêm CTV";
+  document.getElementById("createCtvDescription").textContent = "Lưu cộng tác viên mới trực tiếp vào database.";
+  form.querySelector('button[type="submit"] span').textContent = "Lưu CTV";
+  message.textContent = "";
+  message.className = "form-message";
+  document.getElementById("createCtvDialog").showModal();
+  form.elements.fullName.focus();
+}
+
+function openEditCtvModal(ctv) {
+  const form = document.getElementById("createCtvForm");
+  form.dataset.editingCtvId = ctv.id;
+  form.dataset.originalCtv = JSON.stringify({
+    fullName: ctv.fullName || ctv.name || "",
+    phone: ctv.phone || "",
+    email: ctv.email || "",
+  });
+  form.elements.fullName.value = ctv.fullName || ctv.name || "";
+  form.elements.phone.value = ctv.phone || "";
+  form.elements.email.value = ctv.email || "";
+  document.getElementById("createCtvTitle").textContent = "Sửa CTV";
+  document.getElementById("createCtvDescription").textContent = "Cập nhật thông tin CTV trực tiếp vào database.";
+  form.querySelector('button[type="submit"] span').textContent = "Lưu thay đổi";
+  const message = document.getElementById("createCtvMessage");
   message.textContent = "";
   message.className = "form-message";
   document.getElementById("createCtvDialog").showModal();
@@ -3719,16 +3857,30 @@ function bindCreateCtvModal() {
       return;
     }
 
+    const editingCtvId = form.dataset.editingCtvId;
+    if (editingCtvId && form.dataset.originalCtv) {
+      const original = JSON.parse(form.dataset.originalCtv);
+      const unchanged = ["fullName", "phone", "email"].every((field) =>
+        String(payload[field] || "").trim() === String(original[field] || "").trim(),
+      );
+      if (unchanged) {
+        message.textContent = "Không có thay đổi.";
+        message.className = "form-message";
+        return;
+      }
+    }
+
     message.textContent = "Đang lưu CTV...";
     message.className = "form-message";
     submitButton.disabled = true;
     try {
-      await createCtv(payload);
+      if (editingCtvId) await updateCtv(editingCtvId, payload);
+      else await createCtv(payload);
       currentCtvs = await loadCtvs();
       ctvsLoaded = true;
       populateCandidateCtvOptions();
       renderCtvTable(currentCtvs);
-      message.textContent = "Đã thêm CTV.";
+      message.textContent = editingCtvId ? "Đã cập nhật CTV." : "Đã thêm CTV.";
       message.className = "form-message success";
       setTimeout(closeCreateCtvModal, 450);
     } catch (error) {

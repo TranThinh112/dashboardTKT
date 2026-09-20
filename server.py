@@ -7,7 +7,7 @@ import re
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -450,6 +450,17 @@ def get_order_change_labels(existing, payload):
 def get_change_labels(existing, payload, fields):
     return [label for key, label in fields if existing.get(key) != payload.get(key)]
 
+def describe_group_link_change(old_value, new_value):
+    old_link = str(old_value or "").strip()
+    new_link = str(new_value or "").strip()
+    if old_link == new_link:
+        return ""
+    if not old_link and new_link:
+        return f"da them link nhom: {new_link}"
+    if old_link and not new_link:
+        return f"da xoa link nhom (link cu: {old_link})"
+    return f"da doi link nhom: {old_link} -> {new_link}"
+
 
 def has_valid_cv_data_url(value):
     """Return whether a data URL contains decodable, non-empty CV content."""
@@ -705,6 +716,21 @@ class MongoStore:
         self.db.applications.create_index([("orderId", ASCENDING), ("stage", ASCENDING)])
         self.db.applications.create_index([("orderId", ASCENDING), ("candidateId", ASCENDING)], unique=True)
         self.db.activity_logs.create_index([("createdAt", DESCENDING)])
+        self.cleanup_orphan_applications()
+
+    def cleanup_orphan_applications(self):
+        """Remove applications whose candidate was deleted by older app versions."""
+        orphan_ids = [
+            item["_id"]
+            for item in self.db.applications.aggregate([
+                {"$lookup": {"from": "candidates", "localField": "candidateId", "foreignField": "_id", "as": "candidate"}},
+                {"$match": {"candidate": {"$eq": []}}},
+                {"$project": {"_id": 1}},
+            ])
+        ]
+        if orphan_ids:
+            self.db.applications.delete_many({"_id": {"$in": orphan_ids}})
+        return len(orphan_ids)
 
     def record_activity(self, message, category="update"):
         self.db.activity_logs.insert_one({
@@ -714,6 +740,7 @@ class MongoStore:
         })
 
     def list_activities(self):
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
         return {"ok": True, "activities": [
             {
                 "id": doc_id(item.get("_id")),
@@ -721,7 +748,10 @@ class MongoStore:
                 "category": item.get("category", "update"),
                 "createdAt": iso_datetime(item.get("createdAt")),
             }
-            for item in self.db.activity_logs.find({}, {"message": 1, "category": 1, "createdAt": 1}).sort("createdAt", DESCENDING).limit(100)
+            for item in self.db.activity_logs.find(
+                {"createdAt": {"$gte": seven_days_ago}},
+                {"message": 1, "category": 1, "createdAt": 1},
+            ).sort("createdAt", DESCENDING).limit(100)
         ]}
 
     def drop_unique_index_if_present(self, collection_name, index_name):
@@ -1207,18 +1237,29 @@ class MongoStore:
         if unset_fields:
             update["$unset"] = unset_fields
         changed_fields = get_change_labels(existing, payload, [
-            ("fullName", "họ tên"), ("phone", "SĐT"), ("email", "email"),
+            ("fullName", "họ tên"), ("email", "email"),
             ("birthYear", "năm sinh"), ("gender", "giới tính"), ("address", "địa chỉ"),
-            ("zaloLink", "Zalo"), ("groupLink", "link nhóm"), ("role", "ngành"),
+            ("zaloLink", "Zalo"), ("groupLink", "link nhóm"),
             ("note", "ghi chú"), ("cvFileName", "CV"),
         ])
+        old_phone = str(existing.get("phone") or "").strip()
+        new_phone = str(payload.get("phone") or "").strip()
+        if not old_phone and new_phone:
+            changed_fields.append("Thêm SĐT")
+        elif old_phone and not new_phone:
+            changed_fields.append("Xóa SĐT")
         if delete_cv:
             changed_fields.append("CV")
         result = self.db.candidates.update_one({"_id": object_id}, update)
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy ứng viên.")
-        detail = ", ".join(dict.fromkeys(changed_fields)) if changed_fields else "thông tin hồ sơ"
-        self.record_activity(f"Đã cập nhật UV {payload['fullName']}: {detail}", "candidate")
+        group_link_detail = describe_group_link_change(existing.get("groupLink"), payload.get("groupLink"))
+        if group_link_detail:
+            changed_fields = [field for field in changed_fields if field != "link nhóm"]
+            changed_fields.insert(0, group_link_detail)
+        if changed_fields:
+            detail = ", ".join(dict.fromkeys(changed_fields))
+            self.record_activity(f"Đã cập nhật UV {payload['fullName']}: {detail}", "candidate")
         return {"ok": True}
 
     def get_candidate_cv(self, candidate_id, page=0):
@@ -1298,12 +1339,16 @@ class MongoStore:
             raise ValueError("Không thể ghép ảnh CV thành PDF.") from error
 
     def delete_candidate(self, candidate_id):
-        candidate = self.db.candidates.find_one({"_id": mongo_id(candidate_id)}, {"fullName": 1}) or {}
-        result = self.db.candidates.delete_one({"_id": mongo_id(candidate_id)})
+        object_id = mongo_id(candidate_id)
+        candidate = self.db.candidates.find_one({"_id": object_id}, {"fullName": 1}) or {}
+        result = self.db.candidates.delete_one({"_id": object_id})
         if result.deleted_count == 0:
             raise ValueError("Không tìm thấy ứng viên.")
+        # Applications cannot outlive their candidate; otherwise customer cards
+        # render an anonymous "Chưa có tên" entry.
+        removed_applications = self.db.applications.delete_many({"candidateId": object_id}).deleted_count
         self.record_activity(f"Đã xóa ứng viên {candidate.get('fullName') or 'không rõ tên'}", "candidate")
-        return {"ok": True}
+        return {"ok": True, "removedApplications": removed_applications}
 
     def list_ctvs(self, include_stats=True):
         collaborator_stats = self.get_application_stats_by_ctv() if include_stats else {}
@@ -1350,6 +1395,31 @@ class MongoStore:
         return {"ok": True}
 
     def list_applications(self):
+        # Move only still-pending interviews to the result-waiting stage after
+        # one full day; explicit outcome stages are never overwritten.
+        cutoff = utc_now() - timedelta(days=1)
+        overdue_ids = []
+        for item in self.db.applications.find(
+            {"stage": "Chờ PV", "interviewAt": {"$nin": [None, ""]}},
+            {"_id": 1, "interviewAt": 1},
+        ):
+            interview_at = item.get("interviewAt")
+            if isinstance(interview_at, datetime):
+                interview_date = interview_at.replace(tzinfo=None)
+            else:
+                try:
+                    interview_date = datetime.fromisoformat(str(interview_at).replace("Z", "+00:00"))
+                    if interview_date.tzinfo is not None:
+                        interview_date = interview_date.astimezone(VIETNAM_TIMEZONE).replace(tzinfo=None)
+                except (TypeError, ValueError):
+                    continue
+            if interview_date <= cutoff:
+                overdue_ids.append(item["_id"])
+        if overdue_ids:
+            self.db.applications.update_many(
+                {"_id": {"$in": overdue_ids}, "stage": "Chờ PV"},
+                {"$set": {"stage": "Chờ kết quả", "updatedAt": utc_now()}},
+            )
         applications = []
         application_docs = list(self.db.applications.find({}, APPLICATION_LIST_PROJECTION).sort("createdAt", DESCENDING))
         order_lookup = self.get_docs_by_id("orders", [item.get("orderId") for item in application_docs], {"code": 1, "title": 1})
@@ -1406,7 +1476,25 @@ class MongoStore:
         payload = normalize_application_payload(data)
         if not data.get("appliedAt"):
             payload.pop("appliedAt", None)
-        existing = self.db.applications.find_one({"_id": object_id}, {"stage": 1, "droppedAt": 1, "candidateId": 1, "orderId": 1}) or {}
+        existing = self.db.applications.find_one({"_id": object_id}, {"stage": 1, "interviewAt": 1, "droppedAt": 1, "candidateId": 1, "orderId": 1, "ctvId": 1}) or {}
+        previous_stage = str(existing.get("stage") or "").strip()
+        next_stage = str(payload.get("stage") or "").strip()
+        if next_stage == "Chờ kết quả" and previous_stage != "Chờ kết quả":
+            raise ValueError("Chờ kết quả là trạng thái tự động, không thể chọn thủ công.")
+        if previous_stage == "Trượt PV" and next_stage != previous_stage:
+            raise ValueError("UV đã Trượt PV nên không thể chuyển sang trạng thái khác.")
+        if previous_stage == "Đã nhận tiền" and next_stage != previous_stage:
+            raise ValueError("Đã nhận tiền là trạng thái cuối, không thể chuyển sang trạng thái khác.")
+        if previous_stage == "Đậu PV" and next_stage in {"Chờ PV", "Chờ kết quả", "Trượt PV"}:
+            raise ValueError("UV đã Đậu PV nên không thể quay lại trạng thái trước đó.")
+        if previous_stage == "Chờ về Cty" and next_stage not in {"Chờ về Cty", "Hoàn thành", "Đã nhận tiền", "Bỏ đơn"}:
+            raise ValueError("UV đang Chờ về Cty chỉ có thể chuyển sang Hoàn thành, Đã nhận tiền hoặc Bỏ đơn.")
+        if previous_stage == "Hoàn thành" and next_stage not in {"Hoàn thành", "Đã nhận tiền"}:
+            raise ValueError("UV đã Hoàn thành chỉ có thể chuyển sang Đã nhận tiền.")
+        if existing.get("interviewAt") and next_stage == "Chờ PV":
+            raise ValueError("UV đã có lịch PV nên không thể chuyển về Chờ PV.")
+        if {previous_stage, next_stage} == {"Đậu PV", "Trượt PV"}:
+            raise ValueError("Không thể chuyển trực tiếp giữa Đậu PV và Trượt PV.")
         if str(payload.get("stage", "")).strip().lower() == "bỏ đơn" and str(existing.get("stage", "")).strip().lower() != "bỏ đơn":
             payload["droppedAt"] = utc_now()
         elif existing.get("droppedAt"):
@@ -1415,6 +1503,22 @@ class MongoStore:
         if result.matched_count == 0:
             raise ValueError("Không tìm thấy lượt ứng tuyển.")
         if data.get("suppressActivity"):
+            candidate = self.db.candidates.find_one({"_id": payload["candidateId"]}, {"fullName": 1}) or {}
+            if existing.get("orderId") != payload.get("orderId"):
+                old_order = self.db.orders.find_one({"_id": existing.get("orderId")}, {"code": 1}) or {}
+                new_order = self.db.orders.find_one({"_id": payload.get("orderId")}, {"code": 1}) or {}
+                self.record_activity(
+                    f"Đã thay đổi mã đơn cho UV {candidate.get('fullName') or 'không rõ tên'}: {old_order.get('code') or 'không rõ mã'} -> {new_order.get('code') or 'không rõ mã'}",
+                    "application",
+                )
+            if existing.get("ctvId") != payload.get("ctvId"):
+                order = self.db.orders.find_one({"_id": payload["orderId"]}, {"code": 1}) or {}
+                old_ctv = self.db.ctvs.find_one({"_id": existing.get("ctvId")}, {"fullName": 1}) or {}
+                new_ctv = self.db.ctvs.find_one({"_id": payload.get("ctvId")}, {"fullName": 1}) or {}
+                self.record_activity(
+                    f"Đã đổi CTV/nguồn của UV {candidate.get('fullName') or 'không rõ tên'} ({order.get('code') or 'không rõ mã'}): {old_ctv.get('fullName') or 'Chưa có'} → {new_ctv.get('fullName') or 'Chưa có'}",
+                    "application",
+                )
             return {"ok": True}
         candidate = self.db.candidates.find_one({"_id": payload["candidateId"]}, {"fullName": 1}) or {}
         order = self.db.orders.find_one({"_id": payload["orderId"]}, {"code": 1}) or {}
@@ -1424,7 +1528,22 @@ class MongoStore:
             ("interviewAt", "ngày PV"), ("interviewLink", "link PV"),
         ])
         detail = ", ".join(changed_fields) if changed_fields else "thông tin ứng tuyển"
-        self.record_activity(f"Đã cập nhật UV {candidate.get('fullName') or 'không rõ tên'} ({order.get('code') or 'không rõ mã'}): {detail}", "application")
+        old_order = self.db.orders.find_one({"_id": existing.get("orderId")}, {"code": 1}) or {}
+        new_order = self.db.orders.find_one({"_id": payload.get("orderId")}, {"code": 1}) or {}
+        old_order_code = old_order.get("code") or "không rõ mã"
+        new_order_code = new_order.get("code") or "không rõ mã"
+        if existing.get("orderId") != payload.get("orderId"):
+            self.record_activity(
+                f"Đã thay đổi mã đơn cho UV {candidate.get('fullName') or 'không rõ tên'}: {old_order_code} -> {new_order_code}",
+                "application",
+            )
+        elif existing.get("stage") != payload.get("stage"):
+            self.record_activity(
+                f"Đã cập nhật Trạng thái của UV {candidate.get('fullName') or 'không rõ tên'} ({new_order_code}): {payload.get('stage') or 'Chưa có'}",
+                "application",
+            )
+        else:
+            self.record_activity(f"Đã cập nhật UV {candidate.get('fullName') or 'không rõ tên'} ({new_order_code}): {detail}", "application")
         return {"ok": True}
 
     def delete_application(self, application_id):

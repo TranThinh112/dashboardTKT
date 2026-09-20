@@ -7,9 +7,9 @@
     <script>
       document.documentElement.dataset.activeSection = localStorage.getItem("activeDashboardSection") || "orders";
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20260919-order-image-badge-align" />
+    <link rel="stylesheet" href="./styles.css?v=20260920-waiting-result" />
     <script defer src="https://unpkg.com/lucide@latest"></script>
-    <script defer src="./script.js?v=20260919-customer-missing-candidate"></script>
+    <script defer src="./script.js?v=20260920-order-code-fallback-click"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -352,7 +352,7 @@
           </label>
           <label>
             <span>Link nhóm</span>
-            <input name="groupLink" type="url" placeholder="https://..." />
+            <div class="link-input-row"><input name="groupLink" type="url" placeholder="https://..." /><button id="clearCandidateGroupLink" class="link-clear-button" type="button">Xóa link</button></div>
           </label>
           <label class="modal-field-wide cv-upload-field">
             <span>CV</span>
@@ -391,8 +391,8 @@
       <form id="createCtvForm" class="modal-card create-ctv-card" novalidate>
         <div class="modal-header">
           <div>
-            <h2>Thêm CTV</h2>
-            <p class="muted">Lưu cộng tác viên mới trực tiếp vào database.</p>
+            <h2 id="createCtvTitle">Thêm CTV</h2>
+            <p id="createCtvDescription" class="muted">Lưu cộng tác viên mới trực tiếp vào database.</p>
           </div>
           <button id="closeCreateCtvModal" class="icon-button" type="button" aria-label="Đóng">
             <i data-lucide="x" aria-hidden="true"></i>
