@@ -790,6 +790,7 @@ class MongoStore:
 
     def list_activities(self):
         self.cleanup_activity_logs()
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=ACTIVITY_RETENTION_DAYS)
         return {"ok": True, "activities": [
             {
                 "id": doc_id(item.get("_id")),
