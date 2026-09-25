@@ -27,6 +27,8 @@ MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "recruitment_dashboard").strip()
 SERVER_HOST = "0.0.0.0" if os.getenv("PORT") else os.getenv("SERVER_HOST", "localhost").strip()
 SERVER_PORT = int(os.getenv("PORT") or os.getenv("SERVER_PORT", "5173"))
 CACHE_TTL_SECONDS = 3600
+ACTIVITY_RETENTION_DAYS = 7
+ACTIVITY_MAX_COUNT = 100
 VIETNAM_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 DEBUG_API_TIMING = os.getenv("DEBUG_API_TIMING", "0") == "1"
 response_cache = {}
@@ -734,7 +736,7 @@ class MongoStore:
         self.db.applications.create_index([("ctvId", ASCENDING)])
         self.db.applications.create_index([("orderId", ASCENDING), ("stage", ASCENDING)])
         self.db.applications.create_index([("orderId", ASCENDING), ("candidateId", ASCENDING)], unique=True)
-        self.db.activity_logs.create_index([("createdAt", DESCENDING)])
+        self.ensure_activity_log_ttl_index()
         self.cleanup_orphan_applications()
 
     def cleanup_orphan_applications(self):
@@ -751,15 +753,43 @@ class MongoStore:
             self.db.applications.delete_many({"_id": {"$in": orphan_ids}})
         return len(orphan_ids)
 
+    def ensure_activity_log_ttl_index(self):
+        index_info = self.db.activity_logs.index_information()
+        for index_name, details in index_info.items():
+            if index_name == "_id_":
+                continue
+            if details.get("key") == [("createdAt", 1)] or details.get("key") == [("createdAt", -1)]:
+                if details.get("expireAfterSeconds") == ACTIVITY_RETENTION_DAYS * 24 * 60 * 60:
+                    return
+                self.db.activity_logs.drop_index(index_name)
+        self.db.activity_logs.create_index(
+            [("createdAt", ASCENDING)],
+            expireAfterSeconds=ACTIVITY_RETENTION_DAYS * 24 * 60 * 60,
+            name="activity_logs_createdAt_ttl",
+        )
+    def cleanup_activity_logs(self):
+        retention_cutoff = datetime.now(timezone.utc) - timedelta(days=ACTIVITY_RETENTION_DAYS)
+        self.db.activity_logs.delete_many({"createdAt": {"$lt": retention_cutoff}})
+
+        excess_ids = [
+            item["_id"]
+            for item in self.db.activity_logs.find({}, {"_id": 1})
+            .sort("createdAt", DESCENDING)
+            .skip(ACTIVITY_MAX_COUNT)
+        ]
+        if excess_ids:
+            self.db.activity_logs.delete_many({"_id": {"$in": excess_ids}})
+
     def record_activity(self, message, category="update"):
         self.db.activity_logs.insert_one({
             "message": str(message),
             "category": category,
             "createdAt": utc_now(),
         })
+        self.cleanup_activity_logs()
 
     def list_activities(self):
-        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        self.cleanup_activity_logs()
         return {"ok": True, "activities": [
             {
                 "id": doc_id(item.get("_id")),
