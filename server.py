@@ -358,6 +358,25 @@ def badge_for_status(status):
     }.get(status, "")
 
 
+# Quick statuses editable straight from the order list card.
+ACTIVE_ORDER_STATUS = "Đang tuyển"
+PAUSED_ORDER_STATUS = "Tạm ngưng"
+ENOUGH_ORDER_STATUS = "Đã đủ"
+QUICK_ORDER_STATUSES = [ACTIVE_ORDER_STATUS, "Gấp", PAUSED_ORDER_STATUS, ENOUGH_ORDER_STATUS]
+# Orders parked in these statuses leave the main tab.
+ORDER_TAB_HIDDEN_STATUSES = [PAUSED_ORDER_STATUS, ENOUGH_ORDER_STATUS]
+ORDER_TAB_KEYS = ["main", "paused", "enough"]
+
+
+def order_tab_filter(tab):
+    """Mongo filter for one order-list tab (trang chính = đang tuyển + gấp)."""
+    if tab == "paused":
+        return {"status": PAUSED_ORDER_STATUS}
+    if tab == "enough":
+        return {"status": ENOUGH_ORDER_STATUS}
+    return {"status": {"$nin": ORDER_TAB_HIDDEN_STATUSES}}
+
+
 def badge_for_result(value):
     if value >= 8:
         return "success"
@@ -930,7 +949,10 @@ class MongoStore:
     def get_dashboard_data(self, query, include_heavy=True):
         search = query.get("search", [""])[0].strip()
         status = query.get("status", ["all"])[0]
-        filter_query = {}
+        tab = query.get("tab", ["main"])[0]
+        if tab not in ORDER_TAB_KEYS:
+            tab = "main"
+        filter_query = dict(order_tab_filter(tab))
         if status != "all":
             filter_query["status"] = status
         if search:
@@ -1031,8 +1053,12 @@ class MongoStore:
         response = build_dashboard_response(orders, stage_lookup, total_candidates, collaborators, candidates, active_collaborators, candidate_total)
         # Dashboard metrics are global aggregates, independent of the five orders
         # returned for the current list page.
-        response["metrics"]["openOrders"] = self.db.orders.count_documents({"status": {"$ne": "Đã đóng"}})
+        response["metrics"]["openOrders"] = self.db.orders.count_documents(order_tab_filter("main"))
         response["metrics"]["urgentOrders"] = self.db.orders.count_documents({"status": "Gấp"})
+        response["tabs"] = {
+            key: self.db.orders.count_documents(order_tab_filter(key))
+            for key in ORDER_TAB_KEYS
+        }
         response["pagination"] = {
             "page": page,
             "pageSize": page_size,
@@ -1061,7 +1087,7 @@ class MongoStore:
                         "$group": {
                             "_id": None,
                             "openOrders": {
-                                "$sum": {"$cond": [{"$ne": ["$status", "Đã đóng"]}, 1, 0]}
+                                "$sum": {"$cond": [{"$in": ["$status", ORDER_TAB_HIDDEN_STATUSES]}, 0, 1]}
                             },
                             "urgentOrders": {
                                 "$sum": {"$cond": [{"$eq": ["$status", "Gấp"]}, 1, 0]}
@@ -1152,6 +1178,23 @@ class MongoStore:
         detail = ", ".join(changed_fields) if changed_fields else "thông tin đơn"
         self.record_activity(f"Đã cập nhật đơn {payload['code']}: {detail}", "order")
         return {"ok": True}
+
+    def update_order_status(self, code, data):
+        status = str((data or {}).get("status") or "").strip()
+        if status not in QUICK_ORDER_STATUSES:
+            raise ValueError("Trạng thái đơn không hợp lệ.")
+        existing = self.db.orders.find_one({"code": code}, {"status": 1})
+        if not existing:
+            raise ValueError("Không tìm thấy đơn cần cập nhật.")
+        old_status = str(existing.get("status") or "").strip()
+        if old_status == status:
+            return {"ok": True, "status": status, "unchanged": True}
+        self.db.orders.update_one({"code": code}, {"$set": {"status": status, "updatedAt": utc_now()}})
+        self.record_activity(
+            f"Đã đổi trạng thái đơn {code}: {old_status or 'Chưa có'} → {status}",
+            "order",
+        )
+        return {"ok": True, "status": status}
 
     def delete_order(self, code):
         result = self.db.orders.delete_one({"code": code})
@@ -1662,6 +1705,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         clear_response_cache()
         parsed = urlparse(self.path)
         try:
+            if parsed.path.startswith("/api/orders/") and parsed.path.endswith("/status"):
+                code = unquote(parsed.path.removeprefix("/api/orders/").removesuffix("/status").rstrip("/"))
+                self.send_json(store.update_order_status(code, self.read_json_body()))
+                return
             if parsed.path == "/api/orders":
                 self.send_json(store.create_order(self.read_json_body()), 201)
                 return

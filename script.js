@@ -44,6 +44,11 @@ let activeInterviewApplicationId = "";
 let activeCvObjectUrl = "";
 const API_CACHE_TTL = 60 * 60 * 1000;
 const ORDERS_PER_PAGE = 10;
+const ORDER_STATUS_ACTIVE = "Đang tuyển";
+// Quick statuses editable right from the order list card.
+const ORDER_QUICK_STATUSES = [ORDER_STATUS_ACTIVE, "Gấp", "Tạm ngưng", "Đã đủ"];
+const ORDER_TAB_KEYS = ["main", "paused", "enough"];
+let activeOrderTab = "main";
 const ORDER_DETAIL_CACHE_PREFIX = "orderDetail:";
 const apiCache = new Map();
 let orderSearchRenderTimer = 0;
@@ -294,7 +299,7 @@ async function loadDashboard(page = currentOrderPage) {
   const search = document.getElementById("orderSearch")?.value.trim() || "";
   const sortBy = document.getElementById("orderSortBy")?.value || "createdAt";
   const sortDirection = document.getElementById("orderSortDirection")?.value || "desc";
-  const params = new URLSearchParams({ status, search, page, pageSize: ORDERS_PER_PAGE, sortBy, sortDirection });
+  const params = new URLSearchParams({ status, search, page, pageSize: ORDERS_PER_PAGE, sortBy, sortDirection, tab: activeOrderTab });
   return loadCachedApi(`dashboard:${params.toString()}`, async () => {
     const response = await fetch(`/api/dashboard?${params.toString()}`);
 
@@ -454,6 +459,25 @@ async function deleteOrder(code) {
 
   if (!response.ok) {
     throw new Error(data.message || "Không thể xóa đơn tuyển dụng");
+  }
+
+  clearFrontendCache();
+  clearPersistedOrderDetail(code);
+  return data;
+}
+
+async function updateOrderStatus(code, status) {
+  const response = await fetch(`/api/orders/${encodeURIComponent(code)}/status`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ status }),
+  });
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.message || "Không thể cập nhật trạng thái đơn");
   }
 
   clearFrontendCache();
@@ -1491,17 +1515,90 @@ function getOrderBackFee(order) {
     .trim();
 }
 
+function closeOrderStatusMenus(exceptCode = "") {
+  document.querySelectorAll("[data-order-status-menu]").forEach((menu) => {
+    if (exceptCode && menu.dataset.orderStatusMenu === exceptCode) return;
+    menu.hidden = true;
+  });
+  document.querySelectorAll("[data-order-status-toggle]").forEach((button) => {
+    if (exceptCode && button.dataset.orderStatusToggle === exceptCode) return;
+    button.setAttribute("aria-expanded", "false");
+  });
+}
+
+async function setOrderStatus(code, status, button) {
+  const order = currentOrders.find((item) => item.code === code);
+  if (!order) return;
+  if (String(order.status || "").trim() === status) return;
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Đang lưu...";
+  try {
+    await updateOrderStatus(code, status);
+    order.status = status;
+    button.disabled = false;
+    button.textContent = originalLabel;
+    renderOrders(currentOrders);
+    refreshDashboard().catch((error) => console.error(error));
+  } catch (error) {
+    button.textContent = error.message || "Không lưu được";
+    setTimeout(() => {
+      button.textContent = originalLabel;
+      button.disabled = false;
+    }, 1800);
+  }
+}
+
+function renderActiveOrderTab() {
+  document.querySelectorAll("[data-order-tab]").forEach((tab) => {
+    const isActive = tab.dataset.orderTab === activeOrderTab;
+    tab.classList.toggle("is-active", isActive);
+    tab.setAttribute("aria-selected", String(isActive));
+  });
+}
+
+function renderOrderTabCounts(tabs) {
+  if (!tabs) return;
+  document.querySelectorAll("[data-order-tab-count]").forEach((element) => {
+    const value = tabs[element.dataset.orderTabCount];
+    element.textContent = Number.isFinite(value) ? value : 0;
+  });
+}
+
+function bindOrderTabs() {
+  const tabs = document.getElementById("orderTabs");
+  if (tabs) {
+    tabs.addEventListener("click", (event) => {
+      const tab = event.target.closest("[data-order-tab]");
+      if (!tab) return;
+      const nextTab = tab.dataset.orderTab;
+      if (!nextTab || nextTab === activeOrderTab) return;
+      activeOrderTab = ORDER_TAB_KEYS.includes(nextTab) ? nextTab : "main";
+      currentOrderPage = 1;
+      renderActiveOrderTab();
+      refreshDashboard().catch((error) => console.error(error));
+    });
+  }
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".order-status-wrap")) closeOrderStatusMenus();
+  });
+  renderActiveOrderTab();
+}
+
 function renderOrders(orders) {
   const list = document.getElementById("orderList") || document.getElementById("ordersList");
   updateOrderSearchOptions(orders);
   renderOrderPagination(orderPagination);
+  renderActiveOrderTab();
 
   if (orders.length === 0) {
+    const emptyOrderTitle = activeOrderTab === "paused"
+      ? "Chưa có đơn tạm ngưng"
+      : (activeOrderTab === "enough" ? "Chưa có đơn đã đủ" : "Chưa có đơn phù hợp");
     list.innerHTML = `
       <article class="order-card order-card-empty">
         <div class="empty-state">
-          <strong>Chưa có đơn phù hợp</strong>
-          <span>Thử đổi từ khóa tìm kiếm hoặc kiểm tra lại database.</span>
+          <strong>${emptyOrderTitle}</strong>
         </div>
       </article>
     `;
@@ -1514,6 +1611,16 @@ function renderOrders(orders) {
         const shortTitle = getOrderShortTitle(order);
         const fullTitle = order.title || readJsonValue(order.jobJson, "job_title") || "";
         const backFee = getOrderBackFee(order);
+        const statusLabel = String(order.status || "").trim();
+        const statusKey = normalizeSearchText(statusLabel);
+        const statusTone = statusKey === "gap" ? "danger" : (statusKey === "tam ngung" ? "paused" : (statusKey === "da du" ? "enough" : ""));
+        const statusBadgeLabel = statusKey === "gap" ? "Gấp" : (statusKey === "tam ngung" ? "Tạm ngưng" : (statusKey === "da du" ? "Đã đủ" : ""));
+        const statusOptionsMarkup = ORDER_QUICK_STATUSES.map((value) => {
+          const valueKey = normalizeSearchText(value);
+          const valueTone = valueKey === "gap" ? "danger" : (valueKey === "tam ngung" ? "paused" : (valueKey === "da du" ? "enough" : "active"));
+          const isCurrent = valueKey === statusKey;
+          return `<button class="order-status-option tone-${valueTone}${isCurrent ? " is-current" : ""}" type="button" data-order-status-code="${escapeHtml(order.code)}" data-order-status-value="${escapeHtml(value)}"${isCurrent ? ` aria-current="true"` : ""}>${escapeHtml(value)}</button>`;
+        }).join("");
 
         return `
         <article class="order-card">
@@ -1523,6 +1630,16 @@ function renderOrders(orders) {
             </div>
 
             <div class="order-actions">
+              <div class="order-status-wrap">
+                <button class="status-action${statusTone ? ` ${statusTone}` : ""}" type="button" data-order-status-toggle="${escapeHtml(order.code)}" aria-haspopup="true" aria-expanded="false" title="Đổi trạng thái đơn">
+                  <i data-lucide="refresh-cw" aria-hidden="true"></i>
+                  <span>${escapeHtml(statusLabel || "Chưa có trạng thái")}</span>
+                </button>
+                <div class="order-status-menu" data-order-status-menu="${escapeHtml(order.code)}" hidden>
+                  <span class="order-status-menu-label">Đổi trạng thái đơn</span>
+                  ${statusOptionsMarkup}
+                </div>
+              </div>
               <button class="dark-action" type="button" data-reopen-code="${escapeHtml(order.code)}">Mở lại</button>
               <button class="copy-text-action" type="button" data-copy-order-code="${escapeHtml(order.code)}">Copy text</button>
               <button class="red-action" type="button" data-delete-code="${escapeHtml(order.code)}">Xóa</button>
@@ -1542,7 +1659,7 @@ function renderOrders(orders) {
                 ${order.hasImage
                   ? `<button class="badge ok image-badge-button" type="button" data-order-image-code="${escapeHtml(order.code)}">Ảnh</button>`
                   : `<span class="badge warn">Không ảnh</span>`}
-                <span class="order-urgent-slot">${normalizeSearchText(order.status) === "gap" ? `<span class="order-urgent-badge">Gấp</span>` : ""}</span>
+                <span class="order-urgent-slot">${statusBadgeLabel ? `<span class="order-urgent-badge ${statusTone}">${escapeHtml(statusBadgeLabel)}</span>` : ""}</span>
               </span>
             </div>
           </div>
@@ -1561,6 +1678,25 @@ function renderOrders(orders) {
 }
 
 async function handleOrderListClick(event) {
+  const statusOption = event.target.closest("[data-order-status-value]");
+  if (statusOption) {
+    closeOrderStatusMenus();
+    await setOrderStatus(statusOption.dataset.orderStatusCode, statusOption.dataset.orderStatusValue, statusOption);
+    return;
+  }
+
+  const statusToggle = event.target.closest("[data-order-status-toggle]");
+  if (statusToggle) {
+    const menu = statusToggle.parentElement.querySelector("[data-order-status-menu]");
+    const willOpen = Boolean(menu?.hidden);
+    closeOrderStatusMenus();
+    if (menu && willOpen) {
+      menu.hidden = false;
+      statusToggle.setAttribute("aria-expanded", "true");
+    }
+    return;
+  }
+
   const button = event.target.closest("[data-order-code], [data-reopen-code], [data-copy-order-code], [data-order-image-code], [data-delete-code]");
   if (!button) return;
 
@@ -2622,6 +2758,7 @@ async function refreshDashboard() {
       ctvsLoaded = true;
     }
     renderMetrics(data.metrics);
+    renderOrderTabCounts(data.tabs);
     await renderActiveSection();
   } catch (error) {
     const list = document.getElementById("orderList") || document.getElementById("ordersList");
@@ -3910,6 +4047,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindInterviewScheduleDialog();
   document.getElementById("orderList")?.addEventListener("click", handleOrderListClick);
   document.getElementById("orderPagination")?.addEventListener("click", handleOrderPaginationClick);
+  bindOrderTabs();
 
   document.getElementById("orderSearch")?.addEventListener("input", () => {
     window.clearTimeout(orderSearchRenderTimer);

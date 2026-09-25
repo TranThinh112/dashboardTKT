@@ -7,9 +7,9 @@
     <script>
       document.documentElement.dataset.activeSection = localStorage.getItem("activeDashboardSection") || "orders";
     </script>
-    <link rel="stylesheet" href="./styles.css?v=20260920-waiting-result" />
+    <link rel="stylesheet" href="./styles.css?v=20260925-empty-state" />
     <script defer src="https://unpkg.com/lucide@latest"></script>
-    <script defer src="./script.js?v=20260920-order-code-fallback-click"></script>
+    <script defer src="./script.js?v=20260925-empty-state"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -86,6 +86,12 @@
             <section class="samples">
               <article class="sample-card">
                 <h2 id="primaryPanelTitle">Quản lý đơn đã tạo</h2>
+
+                <div class="order-tabs" id="orderTabs" data-orders-only role="tablist" aria-label="Nhóm đơn theo trạng thái">
+                  <button class="order-tab is-active" type="button" role="tab" aria-selected="true" data-order-tab="main">Tổng <span class="order-tab-count" data-order-tab-count="main">0</span></button>
+                  <button class="order-tab" type="button" role="tab" aria-selected="false" data-order-tab="paused">Tạm ngưng <span class="order-tab-count" data-order-tab-count="paused">0</span></button>
+                  <button class="order-tab" type="button" role="tab" aria-selected="false" data-order-tab="enough">Đã đủ <span class="order-tab-count" data-order-tab-count="enough">0</span></button>
+                </div>
 
                 <div class="sort-toolbar" data-orders-only>
                   <label class="search-label">Tìm đơn
