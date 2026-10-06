@@ -42,7 +42,7 @@ let candidatesLoaded = false;
 let ctvsLoaded = false;
 let activeInterviewApplicationId = "";
 let activeCvObjectUrl = "";
-const API_CACHE_TTL = 10 * 1000;
+const API_CACHE_TTL = 2 * 1000;
 const ORDERS_PER_PAGE = 10;
 const ORDER_STATUS_ACTIVE = "Đang tuyển";
 // Quick statuses editable right from the order list card.
@@ -396,7 +396,7 @@ function bindNotifications() {
     }
   });
   checkNewActivities();
-  window.setInterval(checkNewActivities, 10000);
+  window.setInterval(checkNewActivities, 5000);
 }
 
 async function loadBootstrap() {
