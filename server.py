@@ -1907,6 +1907,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     store.init()
     prewarm_response_cache()
+    try:
+        from telegram_bot import start_telegram_bot_thread
+        start_telegram_bot_thread()
+    except Exception as err:
+        print(f"Không thể khởi chạy Telegram Bot thread: {err}")
     server = ThreadingHTTPServer((SERVER_HOST, SERVER_PORT), DashboardHandler)
     print(f"Dashboard server: http://{SERVER_HOST}:{SERVER_PORT}")
     print("Database backend: mongodb")
