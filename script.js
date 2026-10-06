@@ -2155,11 +2155,12 @@ function renderCandidateTable(candidates) {
   const sortBy = document.getElementById("candidateSortBy")?.value || "joinedAt";
   const direction = document.getElementById("candidateSortDirection")?.value || "desc";
   const query = normalizeSearchText(search);
+  const isBlacklist = activeCandidateView === "blacklist";
   const visibleCandidates = [...candidates]
     .filter((candidate) => {
       const application = getCandidateApplication(candidate);
       const isBlacklisted = getCandidateStatus(candidate, application) === "Bỏ đơn";
-      if (activeCandidateView === "blacklist" ? !isBlacklisted : isBlacklisted) return false;
+      if (isBlacklist ? !isBlacklisted : isBlacklisted) return false;
       const matchesSearch = !query || normalizeSearchText([
         candidate.fullName || candidate.name,
         getCandidateOrderLabel(candidate, application),
@@ -2168,6 +2169,7 @@ function renderCandidateTable(candidates) {
         getCandidateCtv(candidate, application),
         getCandidateCvLink(candidate, application),
         getCandidateJoinedAt(candidate, application),
+        getCandidateDroppedAt(candidate, application),
         candidate.zaloLink,
         application?.groupLink || candidate.groupLink,
       ].filter(Boolean).join(" ")).includes(query);
@@ -2178,14 +2180,24 @@ function renderCandidateTable(candidates) {
       const multiplier = direction === "asc" ? 1 : -1;
       const firstApp = getCandidateApplication(a);
       const secondApp = getCandidateApplication(b);
-      const first = sortBy === "name" ? (a.fullName || a.name || "") : sortBy === "stage" ? getCandidateStatus(a, firstApp) : getCandidateJoinedAt(a, firstApp);
-      const second = sortBy === "name" ? (b.fullName || b.name || "") : sortBy === "stage" ? getCandidateStatus(b, secondApp) : getCandidateJoinedAt(b, secondApp);
+      let first, second;
+      if (sortBy === "name") {
+        first = a.fullName || a.name || "";
+        second = b.fullName || b.name || "";
+      } else if (sortBy === "stage") {
+        first = getCandidateStatus(a, firstApp);
+        second = getCandidateStatus(b, secondApp);
+      } else if (isBlacklist) {
+        first = getCandidateDroppedAt(a, firstApp) || getCandidateJoinedAt(a, firstApp);
+        second = getCandidateDroppedAt(b, secondApp) || getCandidateJoinedAt(b, secondApp);
+      } else {
+        first = getCandidateJoinedAt(a, firstApp);
+        second = getCandidateJoinedAt(b, secondApp);
+      }
       return String(first).localeCompare(String(second), "vi", { numeric: true, sensitivity: "base" }) * multiplier;
     });
 
   const stages = ["Chờ PV", "Chờ kết quả", "Chờ về cty", "Hoàn thành"];
-
-  const isBlacklist = activeCandidateView === "blacklist";
   const globalMatches = getGlobalCandidateMatches(query);
   const globalResults = query ? `
     <section class="candidate-global-results" aria-label="Kết quả tìm kiếm toàn bộ UV">
@@ -2211,7 +2223,7 @@ function renderCandidateTable(candidates) {
       </label>
       <label>Sắp xếp
         <select id="candidateSortBy">
-          <option value="joinedAt" ${sortBy === "joinedAt" ? "selected" : ""}>Thời gian tham gia</option>
+          <option value="joinedAt" ${sortBy === "joinedAt" ? "selected" : ""}>${isBlacklist ? "Thời gian bỏ đơn" : "Thời gian tham gia"}</option>
           <option value="name" ${sortBy === "name" ? "selected" : ""}>Tên</option>
           <option value="stage" ${sortBy === "stage" ? "selected" : ""}>Trạng thái</option>
         </select>
