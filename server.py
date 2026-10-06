@@ -1333,6 +1333,7 @@ class MongoStore:
         self.assert_candidate_unique(payload)
         payload["createdAt"] = utc_now()
         result = self.db.candidates.insert_one(payload)
+        clear_response_cache()
         return {"ok": True, "id": doc_id(result.inserted_id)}
 
     def update_candidate(self, candidate_id, data):
@@ -1609,6 +1610,7 @@ class MongoStore:
         if str(payload.get("stage", "")).strip().lower() == "bỏ đơn":
             payload["droppedAt"] = payload["createdAt"]
         result = self.db.applications.insert_one(payload)
+        clear_response_cache()
         candidate = self.db.candidates.find_one({"_id": payload["candidateId"]}, {"fullName": 1}) or {}
         order = self.db.orders.find_one({"_id": payload["orderId"]}, {"code": 1}) or {}
         ctv = self.db.ctvs.find_one({"_id": payload["ctvId"]}, {"fullName": 1}) or {}
