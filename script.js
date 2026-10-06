@@ -42,7 +42,7 @@ let candidatesLoaded = false;
 let ctvsLoaded = false;
 let activeInterviewApplicationId = "";
 let activeCvObjectUrl = "";
-const API_CACHE_TTL = 60 * 60 * 1000;
+const API_CACHE_TTL = 10 * 1000;
 const ORDERS_PER_PAGE = 10;
 const ORDER_STATUS_ACTIVE = "Đang tuyển";
 // Quick statuses editable right from the order list card.
@@ -364,6 +364,22 @@ async function openNotifications() {
   }
 }
 
+let lastActivityCount = -1;
+
+async function checkNewActivities() {
+  try {
+    const activities = await loadActivities();
+    updateNotificationBadge(activities);
+    if (lastActivityCount !== -1 && activities.length !== lastActivityCount) {
+      clearFrontendCache();
+      refreshDashboard().catch(console.error);
+    }
+    lastActivityCount = activities.length;
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 function bindNotifications() {
   const dialog = document.getElementById("notificationsDialog");
   document.getElementById("openNotifications").addEventListener("click", openNotifications);
@@ -379,8 +395,8 @@ function bindNotifications() {
       refreshDashboard().catch(console.error);
     }
   });
-  loadActivities().then(updateNotificationBadge).catch(console.error);
-  window.setInterval(() => loadActivities().then(updateNotificationBadge).catch(console.error), 30000);
+  checkNewActivities();
+  window.setInterval(checkNewActivities, 10000);
 }
 
 async function loadBootstrap() {
@@ -2703,6 +2719,13 @@ async function renderActiveSection() {
     if (candidatesLoaded) {
       if (!candidateOrderOptions.length) candidateOrderOptions = await loadCandidateOrderOptions();
       renderCandidateTable(currentCandidates);
+      // Background revalidate fresh candidate data from server
+      Promise.all([loadCandidates(), loadApplications(), loadCandidateOrderOptions()]).then(([candidates, applications, orders]) => {
+        currentCandidates = candidates;
+        currentApplications = applications;
+        candidateOrderOptions = orders;
+        renderCandidateTable(currentCandidates);
+      }).catch(console.error);
       return;
     }
     if (!list.querySelector("#candidateSearch, .preload-candidates")) {
