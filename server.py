@@ -29,6 +29,7 @@ SERVER_PORT = int(os.getenv("PORT") or os.getenv("SERVER_PORT", "5173"))
 CACHE_TTL_SECONDS = 3600
 ACTIVITY_RETENTION_DAYS = 7
 ACTIVITY_MAX_COUNT = 100
+STALE_STAGE_AUTO_DROP_DAYS = 14
 VIETNAM_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 DEBUG_API_TIMING = os.getenv("DEBUG_API_TIMING", "0") == "1"
 response_cache = {}
@@ -124,6 +125,7 @@ APPLICATION_LIST_PROJECTION = {
     "meetingLink": 1,
     "resultAt": 1,
     "droppedAt": 1,
+    "stageUpdatedAt": 1,
     "createdAt": 1,
     "updatedAt": 1,
 }
@@ -738,6 +740,7 @@ class MongoStore:
         self.db.applications.create_index([("orderId", ASCENDING), ("candidateId", ASCENDING)], unique=True)
         self.ensure_activity_log_ttl_index()
         self.cleanup_orphan_applications()
+        self.auto_drop_stale_applications()
 
     def cleanup_orphan_applications(self):
         """Remove applications whose candidate was deleted by older app versions."""
@@ -752,6 +755,70 @@ class MongoStore:
         if orphan_ids:
             self.db.applications.delete_many({"_id": {"$in": orphan_ids}})
         return len(orphan_ids)
+
+    def auto_drop_stale_applications(self):
+        """Automatically transition applications to 'Bỏ đơn' if stage remains unchanged for over 14 days (2 weeks)."""
+        cutoff = utc_now() - timedelta(days=STALE_STAGE_AUTO_DROP_DAYS)
+        terminal_stages = {"Bỏ đơn", "Đã nhận tiền", "Hoàn thành", "Trượt PV"}
+
+        query = {"stage": {"$nin": list(terminal_stages)}}
+        stale_apps = []
+        for app in self.db.applications.find(
+            query,
+            {"_id": 1, "stage": 1, "candidateId": 1, "orderId": 1, "stageUpdatedAt": 1, "updatedAt": 1, "createdAt": 1},
+        ):
+            dt = app.get("stageUpdatedAt") or app.get("updatedAt") or app.get("createdAt")
+            if isinstance(dt, str):
+                try:
+                    dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    continue
+            if isinstance(dt, datetime):
+                dt = dt.replace(tzinfo=None)
+            else:
+                continue
+            if dt and dt <= cutoff:
+                stale_apps.append(app)
+
+        if not stale_apps:
+            return 0
+
+        now = utc_now()
+        updated_count = 0
+        for app in stale_apps:
+            old_stage = app.get("stage") or "N/A"
+            res = self.db.applications.update_one(
+                {"_id": app["_id"], "stage": old_stage},
+                {
+                    "$set": {
+                        "stage": "Bỏ đơn",
+                        "droppedAt": now,
+                        "updatedAt": now,
+                        "stageUpdatedAt": now,
+                    }
+                },
+            )
+            if res.modified_count > 0:
+                updated_count += 1
+                if app.get("candidateId"):
+                    self.db.candidates.update_one(
+                        {"_id": app["candidateId"]},
+                        {"$set": {"stage": "Bỏ đơn", "updatedAt": now}}
+                    )
+                candidate = self.db.candidates.find_one({"_id": app.get("candidateId")}, {"fullName": 1}) or {}
+                order = self.db.orders.find_one({"_id": app.get("orderId")}, {"code": 1}) or {}
+                cand_name = candidate.get("fullName") or "không rõ tên"
+                order_code = order.get("code") or "không rõ mã"
+                self.record_activity(
+                    f"UV {cand_name} ({order_code}) tự động chuyển sang Bỏ đơn do giữ nguyên trạng thái '{old_stage}' quá 2 tuần",
+                    "application",
+                )
+
+        if updated_count > 0:
+            clear_response_cache()
+
+        return updated_count
+
 
     def ensure_activity_log_ttl_index(self):
         index_info = self.db.activity_logs.index_information()
@@ -978,6 +1045,7 @@ class MongoStore:
         return stats
 
     def get_dashboard_data(self, query, include_heavy=True):
+        self.auto_drop_stale_applications()
         search = query.get("search", [""])[0].strip()
         status = query.get("status", ["all"])[0]
         tab = query.get("tab", ["main"])[0]
@@ -1469,6 +1537,7 @@ class MongoStore:
         return {"ok": True}
 
     def list_applications(self):
+        self.auto_drop_stale_applications()
         # Move only still-pending interviews to the result-waiting stage after
         # one full day; explicit outcome stages are never overwritten.
         cutoff = utc_now() - timedelta(days=1)
@@ -1525,6 +1594,7 @@ class MongoStore:
                 "interviewLink": item.get("interviewLink") or item.get("interviewUrl") or item.get("meetingLink") or "",
                 "resultAt": iso_datetime(item.get("resultAt")),
                 "droppedAt": iso_datetime(item.get("droppedAt")),
+                "stageUpdatedAt": iso_datetime(item.get("stageUpdatedAt") or item.get("updatedAt") or item.get("createdAt")),
                 "createdAt": iso_datetime(item.get("createdAt")),
                 "updatedAt": iso_datetime(item.get("updatedAt")),
             })
@@ -1532,7 +1602,10 @@ class MongoStore:
 
     def create_application(self, data):
         payload = normalize_application_payload(data)
-        payload["createdAt"] = utc_now()
+        now = utc_now()
+        payload["createdAt"] = now
+        payload["updatedAt"] = now
+        payload["stageUpdatedAt"] = now
         if str(payload.get("stage", "")).strip().lower() == "bỏ đơn":
             payload["droppedAt"] = payload["createdAt"]
         result = self.db.applications.insert_one(payload)
@@ -1550,7 +1623,7 @@ class MongoStore:
         payload = normalize_application_payload(data)
         if not data.get("appliedAt"):
             payload.pop("appliedAt", None)
-        existing = self.db.applications.find_one({"_id": object_id}, {"stage": 1, "interviewAt": 1, "droppedAt": 1, "candidateId": 1, "orderId": 1, "ctvId": 1}) or {}
+        existing = self.db.applications.find_one({"_id": object_id}, {"stage": 1, "interviewAt": 1, "droppedAt": 1, "stageUpdatedAt": 1, "createdAt": 1, "updatedAt": 1, "candidateId": 1, "orderId": 1, "ctvId": 1}) or {}
         previous_stage = str(existing.get("stage") or "").strip()
         next_stage = str(payload.get("stage") or "").strip()
         if next_stage == "Chờ kết quả" and previous_stage != "Chờ kết quả":
@@ -1569,8 +1642,16 @@ class MongoStore:
             raise ValueError("UV đã có lịch PV nên không thể chuyển về Chờ PV.")
         if {previous_stage, next_stage} == {"Đậu PV", "Trượt PV"}:
             raise ValueError("Không thể chuyển trực tiếp giữa Đậu PV và Trượt PV.")
+        now = utc_now()
+        payload["updatedAt"] = now
+        if previous_stage != next_stage:
+            payload["stageUpdatedAt"] = now
+        elif existing.get("stageUpdatedAt"):
+            payload["stageUpdatedAt"] = existing["stageUpdatedAt"]
+        else:
+            payload["stageUpdatedAt"] = existing.get("updatedAt") or existing.get("createdAt") or now
         if str(payload.get("stage", "")).strip().lower() == "bỏ đơn" and str(existing.get("stage", "")).strip().lower() != "bỏ đơn":
-            payload["droppedAt"] = utc_now()
+            payload["droppedAt"] = now
         elif existing.get("droppedAt"):
             payload["droppedAt"] = existing["droppedAt"]
         result = self.db.applications.update_one({"_id": object_id}, {"$set": payload})

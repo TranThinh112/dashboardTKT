@@ -367,9 +367,17 @@ async function openNotifications() {
 function bindNotifications() {
   const dialog = document.getElementById("notificationsDialog");
   document.getElementById("openNotifications").addEventListener("click", openNotifications);
-  document.getElementById("closeNotifications").addEventListener("click", () => dialog.close());
+  document.getElementById("closeNotifications").addEventListener("click", () => {
+    dialog.close();
+    clearFrontendCache();
+    refreshDashboard().catch(console.error);
+  });
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) dialog.close();
+    if (event.target === dialog) {
+      dialog.close();
+      clearFrontendCache();
+      refreshDashboard().catch(console.error);
+    }
   });
   loadActivities().then(updateNotificationBadge).catch(console.error);
   window.setInterval(() => loadActivities().then(updateNotificationBadge).catch(console.error), 30000);
